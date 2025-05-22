@@ -1,0 +1,4 @@
+- Spec doesn't say that you MUST specify either `i` or `I`, but it seems to not respond if you have neither
+- `echo -ne '\e_GI=9,a=q,t=f;L2hvbWUvanVuZS9QaWN0dXJlcy9tb25rZXl0eXBlLnBuZw\e\\'` results in no error, while `echo -ne '\e_GI=9,a=T,t=f;L2hvbWUvanVuZS9QaWN0dXJlcy9tb25rZXl0eXBlLnBuZw\e\\'` reports an error
+- Using an id of 0 silently fails
+- We need clarification on what will be responded to with an error and what will simply be ignored
