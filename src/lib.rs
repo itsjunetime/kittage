@@ -1,6 +1,7 @@
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+pub mod delete;
 pub mod display;
 pub mod error;
 #[cfg(any(test, feature = "crossterm-tokio"))]
@@ -22,9 +23,10 @@ use base64::{
 	engine::{GeneralPurpose, general_purpose::STANDARD_NO_PAD},
 	write::EncoderWriter as Base64Encoder
 };
+use delete::DeleteConfig;
 use display::DisplayConfig;
 use error::TransmitError;
-use image::{Image, parse_response};
+use image::{Image, read_parse_response, read_parse_response_async};
 
 trait Encoder<W: Write>: Write {
 	fn write_all_allow_empty(&mut self, slice: &[u8]) -> std::io::Result<()> {
@@ -197,7 +199,7 @@ impl Medium<'_> {
 }
 
 pub(crate) trait WriteUint: Write + Sized {
-	fn write_uint<const KEY: char, E: Encodable<Self, KEY>>(mut self, u: E) -> std::io::Result<Self> {
+	fn write_uint<const KEY: char, E: Encodable<Self, KEY>>(self, u: E) -> std::io::Result<Self> {
 		if u != E::DEFAULT {
 			u.write_kv_encoded(self)
 		} else {
@@ -224,7 +226,13 @@ pub enum PixelFormat {
 
 impl<W: Write> Encodable<W, 'f'> for PixelFormat {
 	// this isn't actually the default? but whatever, we aren't gonna touch it
-	const DEFAULT: Self = Self::Rgb24(ImageDimensions { width: 0, height: 0 }, None);
+	const DEFAULT: Self = Self::Rgb24(
+		ImageDimensions {
+			width: 0,
+			height: 0
+		},
+		None
+	);
 
 	fn write_value_to(&self, mut writer: W) -> std::io::Result<W> {
 		fn write_w_h_cmp<W: Write>(
@@ -252,7 +260,8 @@ impl<W: Write> Encodable<W, 'f'> for PixelFormat {
 			Self::Png(cmp_and_size) => {
 				write!(writer, "100")?;
 				if let Some((cmp, size)) = cmp_and_size {
-					writer = Some(*cmp).write_kv_encoded(writer)?
+					writer = Some(*cmp)
+						.write_kv_encoded(writer)?
 						.write_uint::<COMPRESSED_DATA_SIZE_KEY, _>(*size)?;
 				}
 				Ok(writer)
@@ -357,37 +366,50 @@ pub enum Action<'image, 'data> {
 	/// `Transmit` is successfully sent, one can then display the sent image with
 	/// [`Action::Display`]
 	Transmit(Image<'data>),
+	/// Display an image which was already transmitted to (and is now owned by) the terminal
 	Display {
+		/// The image ID of the image which you want to display
 		image_id: ImageId,
-		placement_id: ImageId,
+		/// A 'placement ID' for this display - see the documentation for [`PlacementId`] for more
+		/// info. This must be sent when displaying something that was already transmitted, but is
+		/// optional when transmitting and displaying in-one (e.g. with
+		/// [`Self::TransmitAndDisplay`]
+		placement_id: PlacementId,
+		/// The details about exactly how this image should be displayed - the location, cursor
+		/// movement, etc
 		config: DisplayConfig
 	},
 	/// Transmit and then display an image. Should act effectively the same as calling
 	/// [`Action::Transmit`] and then [`Action::Display`] with the returned image id.
 	TransmitAndDisplay {
+		/// The image which will be transferred to the terminal and then displayed immediately
+		/// after
 		image: Image<'data>,
+		/// The details about exactly how this image should be displayed - the location, cursor
+		/// movement, etc
 		config: DisplayConfig,
-		placement_id: Option<ImageId>
+		/// The placement ID for this display, if you'd like to use one. It is not necessary when
+		/// transmitting and displaying in-one
+		placement_id: Option<PlacementId>
 	},
 	Query(&'image Image<'data>),
-	Delete,
+	Delete(DeleteConfig),
 	TransmitAnimationFrames,
 	ControlAnimation,
 	ComposeAnimationFrames
 }
 
 impl Action<'_, '_> {
-	pub fn send<W: Write, I: InputReader>(
-		self,
-		mut writer: W,
-		mut reader: I
-	) -> Result<(W, ImageId), TransmitError<I::Error>> {
+	/// Write the transmit code for this [`Action`] to `writer` - this is the first part of
+	/// [`Self::execute`] and only does a part of what is necessary to fully interact with a
+	/// terminal. The full details can be found at [`Self::execute`].
+	pub fn write_transmit_to<W: Write>(self, mut writer: W) -> std::io::Result<W> {
 		write!(writer, "a=")?;
 
-		match self {
+		let (mut writer, image_to_unlink) = match self {
 			Self::Transmit(image) => {
 				write!(writer, "t,")?;
-				image.transmit(writer, reader, None)
+				(image.write_transmit_to(writer, None)?, Some(image))
 			}
 			Self::TransmitAndDisplay {
 				image,
@@ -396,11 +418,11 @@ impl Action<'_, '_> {
 			} => {
 				write!(writer, "T,")?;
 				writer = config.write_to(writer)?;
-				image.transmit(writer, reader, placement_id)
+				(image.write_transmit_to(writer, placement_id)?, Some(image))
 			}
 			Self::Query(image) => {
 				write!(writer, "q,")?;
-				image.query(writer, reader, None)
+				(image.write_transmit_to(writer, None)?, None)
 			}
 			Self::Display {
 				image_id,
@@ -408,29 +430,90 @@ impl Action<'_, '_> {
 				config
 			} => {
 				write!(writer, "p,i={image_id},p={placement_id},")?;
-				writer = config.write_to(writer)?;
-
-				// [todo]? separate this out into another shared fn?
-				// preallocate the response to handle most expected responses
-				let mut output = String::with_capacity("\x1b_Gi=;OK\x1b\\".len() + 10);
-				// Try to get the terminal's repsonse
-				if let Err(e) = reader.read_into_buf_until_char(&mut output, '\\') {
-					return Err(TransmitError::ReadingInput(e));
-				}
-
-				parse_response(output, NumberOrId::Id(image_id), Some(placement_id)).map_or_else(
-					|e| Err(TransmitError::ParsingResponse(e)),
-					|res| res.map_err(TransmitError::Terminal)
-				)?;
-				Ok((writer, image_id))
+				(config.write_to(writer)?, None)
 			}
+			_ => todo!()
+		};
+
+		writer.flush()?;
+
+		if let Some(img) = image_to_unlink {
+			img.unlink_if_shm();
+		}
+
+		Ok(writer)
+	}
+
+	fn extract_num_or_id_and_placement(&self) -> (NumberOrId, Option<PlacementId>) {
+		match self {
+			Self::Transmit(img) => (img.num_or_id, None),
+			Self::TransmitAndDisplay {
+				image,
+				placement_id,
+				..
+			} => (image.num_or_id, *placement_id),
+			Self::Query(img) => (img.num_or_id, None),
+			Self::Display {
+				image_id,
+				placement_id,
+				..
+			} => (NumberOrId::Id(*image_id), Some(*placement_id)),
 			_ => todo!()
 		}
 	}
+
+	/// This is the main point of interaction with this library - to display an image, you need to
+	/// create an [`Action`] and then call this function on it.
+	///
+	/// This function does two main things:
+	/// 1. Writes the necessary escape codes to `writer`, then flushes it.
+	/// 2. Unlinks the shared memory object if necessary (see [`Medium::SharedMemObject`])
+	/// 3. Reads in the terminal's response via `reader`
+	/// 4. Parses the terminal's response and returns any errors that occur or are transmitted
+	///
+	/// Steps 1 & 2 are performed simply by calling [`Self::write_transmit_to`], so this library
+	/// can be used in a sans-io method by using that instead. ([TODO]: make the parse method pub
+	/// in a more ergonomic API)
+	///
+	/// For this function to work correctly, `writer` should be writing directly to something that
+	/// flushes directly to a kitty-supporting terminal. This function assumes that, once flushed
+	/// to `writer`, the terminal will respond and this response can be read by `reader`.
+	pub fn execute<W: Write, I: InputReader>(
+		self,
+		writer: W,
+		reader: I
+	) -> Result<(W, ImageId), TransmitError<I::Error>> {
+		let (id_or_num, placement_id) = self.extract_num_or_id_and_placement();
+
+		let writer = self.write_transmit_to(writer)?;
+
+		let img_id = read_parse_response(reader, id_or_num, placement_id)?;
+		Ok((writer, img_id))
+	}
+
+	/// An async version of [`Self::execute`] - check its documentation for more details
+	pub async fn execute_async<W: Write, I: AsyncInputReader>(
+		self,
+		writer: W,
+		reader: I
+	) -> Result<(W, ImageId), TransmitError<I::Error>> {
+		let (id_or_num, placement_id) = self.extract_num_or_id_and_placement();
+
+		let writer = self.write_transmit_to(writer)?;
+
+		let img_id = read_parse_response_async(reader, id_or_num, placement_id).await?;
+		Ok((writer, img_id))
+	}
 }
 
+/// A trait to facilitate reading from stdin in an async manner - the async version of
+/// [`InputReader`]
 pub trait AsyncInputReader {
+	/// The error type that can occur while trying to read
 	type Error: Error;
+	/// Read from stdin into the provided buffer until you encounter the provided character or the
+	/// provided timeout is hit. Timeout measuring does not need to be exact - it is simply used to
+	/// ensure this method doesn't block forever.
 	fn read_into_buf_until_char_with_timeout(
 		&mut self,
 		buf: &mut String,
@@ -439,8 +522,12 @@ pub trait AsyncInputReader {
 	) -> impl Future<Output = Result<(), Self::Error>>;
 }
 
+/// A trait to facilitate reading from stdin - the sync version of [`AsyncInputReader`]
 pub trait InputReader {
+	/// The error type that can occur while trying to read
 	type Error: Error;
+	/// Read from stdin into the provided buffer until you encounter the provided character. Since
+	/// this is not async, it can block forever waiting for that character to come through
 	fn read_into_buf_until_char(&mut self, buf: &mut String, end: char) -> Result<(), Self::Error>;
 }
 
@@ -541,7 +628,7 @@ mod tests {
 	use super::*;
 	use crate::{
 		error::{TerminalError, TransmitError},
-		image::Image
+		image::{Image, parse_response}
 	};
 
 	fn spawn_kitty_get_io(input: &[u8]) -> String {
@@ -589,11 +676,18 @@ mod tests {
 		let mut output = Vec::new();
 		img.write_transmit_to(&mut output, None).unwrap();
 
-		println!("here's output: {}", str::from_utf8(&output).unwrap().replace('\x1b', "\\e"));
+		println!(
+			"here's output: {}",
+			str::from_utf8(&output).unwrap().replace('\x1b', "\\e")
+		);
 
 		let response = spawn_kitty_get_io(&output);
 
-		img.parse_response::<Infallible>(response, None)?;
+		let num_or_id = img.num_or_id;
+		parse_response(response, num_or_id, None).map_or_else(
+			|e| Err(TransmitError::ParsingResponse(e)),
+			|res| res.map_err(TransmitError::Terminal)
+		)?;
 		img.unlink_if_shm();
 		Ok(())
 	}

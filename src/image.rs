@@ -1,10 +1,10 @@
 //! The [`Image`] struct and associated functions to control how it is transmitted to the terminal
 
-use std::{borrow::Cow, error::Error, io::Write, num::NonZeroU32, str::Split, time::Duration};
+use std::{borrow::Cow, io::Write, num::NonZeroU32, str::Split, time::Duration};
 
 use crate::{
-	AnyValueOrSpecific, AsyncInputReader, Encodable, IMAGE_NUMBER_KEY, IdentifierType,
-	ImageId, InputReader, Medium, NumberOrId, PLACEMENT_ID_KEY, PixelFormat, TRANSFER_ID_KEY,
+	AnyValueOrSpecific, AsyncInputReader, Encodable, IMAGE_NUMBER_KEY, IdentifierType, ImageId,
+	InputReader, Medium, NumberOrId, PLACEMENT_ID_KEY, PixelFormat, PlacementId, TRANSFER_ID_KEY,
 	WriteUint,
 	error::{ParseError, TerminalError, TransmitError}
 };
@@ -47,17 +47,6 @@ impl Image<'_> {
 		Ok(writer)
 	}
 
-	pub(crate) fn parse_response<E: Error>(
-		&self,
-		output: String,
-		placement_id: Option<NonZeroU32>
-	) -> Result<ImageId, TransmitError<E>> {
-		parse_response(output, self.num_or_id, placement_id).map_or_else(
-			|e| Err(TransmitError::ParsingResponse(e)),
-			|res| res.map_err(TransmitError::Terminal)
-		)
-	}
-
 	pub(crate) fn unlink_if_shm(mut self) {
 		// If we sent them a shm and they said OK, then they took over it and unlinked it. We want
 		// to make sure it's not double-unlinked so we just forget about it here.
@@ -69,69 +58,43 @@ impl Image<'_> {
 			std::mem::forget(old);
 		}
 	}
+}
 
-	pub(crate) fn query<W: Write, I: InputReader>(
-		&self,
-		mut writer: W,
-		mut reader: I,
-		placement_id: Option<NonZeroU32>
-	) -> Result<(W, ImageId), TransmitError<I::Error>> {
-		writer = self.write_transmit_to(writer, placement_id)?;
-
-		// preallocate the response to handle most expected responses
-		let mut output = String::with_capacity("\x1b_Gi=;OK\x1b\\".len() + 10);
-		// Try to get the terminal's repsonse
-		if let Err(e) = reader.read_into_buf_until_char(&mut output, '\\') {
-			return Err(TransmitError::ReadingInput(e));
-		}
-
-		let image_id = self.parse_response(output, placement_id)?;
-		Ok((writer, image_id))
+pub(crate) async fn read_parse_response_async<I: AsyncInputReader>(
+	mut reader: I,
+	image: NumberOrId,
+	placement_id: Option<PlacementId>
+) -> Result<ImageId, TransmitError<I::Error>> {
+	let mut output = String::with_capacity("\x1b_Gi=;OK\x1b\\".len() + 10);
+	// Try to get the terminal's repsonse
+	if let Err(e) = reader
+		.read_into_buf_until_char_with_timeout(&mut output, '\\', Duration::from_millis(100))
+		.await
+	{
+		return Err(TransmitError::ReadingInput(e));
 	}
 
-	async fn query_async<W: Write, I: AsyncInputReader>(
-		&self,
-		mut writer: W,
-		mut reader: I,
-		placement_id: Option<NonZeroU32>
-	) -> Result<W, TransmitError<I::Error>> {
-		writer = self.write_transmit_to(writer, placement_id)?;
+	parse_response(output, image, placement_id).map_or_else(
+		|e| Err(TransmitError::ParsingResponse(e)),
+		|res| res.map_err(TransmitError::Terminal)
+	)
+}
 
-		// preallocate the response to handle most expected responses
-		let mut output = String::with_capacity("\x1b_Gi=;OK\x1b\\".len() + 10);
-		// Try to get the terminal's repsonse
-		if let Err(e) = reader
-			.read_into_buf_until_char_with_timeout(&mut output, '\\', Duration::from_secs(1))
-			.await
-		{
-			return Err(TransmitError::ReadingInput(e));
-		}
-
-		self.parse_response(output, placement_id)?;
-		Ok(writer)
+pub(crate) fn read_parse_response<I: InputReader>(
+	mut reader: I,
+	image: NumberOrId,
+	placement_id: Option<PlacementId>
+) -> Result<ImageId, TransmitError<I::Error>> {
+	let mut output = String::with_capacity("\x1b_Gi=;OK\x1b\\".len() + 10);
+	// Try to get the terminal's repsonse
+	if let Err(e) = reader.read_into_buf_until_char(&mut output, '\\') {
+		return Err(TransmitError::ReadingInput(e));
 	}
 
-	pub fn transmit<W: Write, I: InputReader>(
-		self,
-		writer: W,
-		reader: I,
-		placement_id: Option<NonZeroU32>
-	) -> Result<(W, ImageId), TransmitError<I::Error>> {
-		let writer_and_id = self.query(writer, reader, placement_id)?;
-		self.unlink_if_shm();
-		Ok(writer_and_id)
-	}
-
-	pub async fn transmit_async<W: Write, I: AsyncInputReader>(
-		self,
-		mut writer: W,
-		reader: I,
-		placement_id: Option<NonZeroU32>
-	) -> Result<W, TransmitError<I::Error>> {
-		writer = self.query_async(writer, reader, placement_id).await?;
-		self.unlink_if_shm();
-		Ok(writer)
-	}
+	parse_response(output, image, placement_id).map_or_else(
+		|e| Err(TransmitError::ParsingResponse(e)),
+		|res| res.map_err(TransmitError::Terminal)
+	)
 }
 
 pub(crate) fn parse_response(
@@ -190,13 +153,13 @@ pub(crate) fn parse_response(
 				// terminal), so it's fine to have an unexpected id here.
 				(None, Some(s)) =>
 					if ty == IdentifierType::ImageId {
-						s.parse::<NonZeroU32>()
-							.map(Some)
-							.map_err(|_| ParseError::DifferentIdInResponse {
+						s.parse::<NonZeroU32>().map(Some).map_err(|_| {
+							ParseError::DifferentIdInResponse {
 								ty,
 								found: s.to_string(),
 								expected: AnyValueOrSpecific::Any
-							})
+							}
+						})
 					} else {
 						Err(ParseError::IdInResponseButNotInRequest {
 							ty,
@@ -223,7 +186,8 @@ pub(crate) fn parse_response(
 				)?;
 			}
 			"p" => {
-				found_place_id = check_next_id(&mut opt, placement_id, IdentifierType::PlacementId)?;
+				found_place_id =
+					check_next_id(&mut opt, placement_id, IdentifierType::PlacementId)?;
 			}
 			"I" => {
 				found_image_num = check_next_id(&mut opt, image_num, IdentifierType::ImageNumber)?;

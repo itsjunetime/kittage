@@ -105,14 +105,24 @@ pub enum ParseError {
 	}
 }
 
+/// Errors that the underlying terminal could return to us in reponse to us writing to the terminal
+/// (e.g. with [`crate::Action::write_transmit_to`]). The exact list of error codes is not
+/// specified by the specification, so this is non-exhaustive
+#[non_exhaustive]
 #[derive(thiserror::Error, Debug, PartialEq)]
 pub enum TerminalError {
+	/// "ENOENT" error code - no such entity
 	#[error("No such entity was found: {0}")]
 	NoEntity(String),
+	/// "EINVAL" error code - invalid argument
 	#[error("Invalid argument: {0}")]
 	InvalidArgument(String),
+	/// "EBADF" error code - Bad file, such as when you provide a path to a file that doesn't exist
 	#[error("Bad file: {0}")]
 	BadFile(String),
+	/// "ENODATA" error code - No Data, such as when no data is sent over the [`Direct`] medium
+	///
+	/// [`Direct`]: crate::Medium::Direct
 	#[error("No Data: {0}")]
 	NoData(String)
 }
