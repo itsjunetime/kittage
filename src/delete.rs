@@ -1,16 +1,25 @@
-use std::{io::Write, num::NonZeroU32, ops::RangeInclusive};
+//! Types and functions to facilitate [`crate::Action::Delete`]
 
-use crate::{ImageId, PlacementId};
+use std::{io::Write, ops::RangeInclusive};
 
+use crate::{ImageId, ImageNumber, PlacementId};
+
+/// What to delete when using [`crate::Action::Delete`]
 #[derive(PartialEq, Debug, Clone)]
 pub struct DeleteConfig {
-	effect: ClearOrDelete,
-	which: WhichToDelete
+	/// Whether to just clear the specified images from the screen ([`ClearOrDelete::Clear`]) or
+	/// completely delete them from memory ([`ClearOrDelete::Delete`])
+	pub effect: ClearOrDelete,
+	/// Specifying exactly how to determine which images to delete
+	pub which: WhichToDelete
 }
 
+/// Whether to clear the specified images from the screen or completely delete them from memory
 #[derive(PartialEq, Debug, Clone, Copy)]
 pub enum ClearOrDelete {
+	/// just clear them from the screen
 	Clear,
+	/// clear them AND delete them from memory
 	Delete
 }
 
@@ -23,36 +32,58 @@ impl ClearOrDelete {
 	}
 }
 
+/// An (x, y) index of a specific cell on the terminal (i.e. specific location where a single
+/// character could be printed)
 #[derive(PartialEq, Debug, Clone)]
-struct CellLocation {
-	x: u16,
-	y: u16
+pub struct CellLocation {
+	/// The x-index
+	pub x: u16,
+	/// The y-index
+	pub y: u16
 }
 
+/// A [`CellLocation`] with an associated z-index (such as is used with
+/// [`crate::display::DisplayLocation::z_index`])
 #[derive(PartialEq, Debug, Clone)]
-struct CellLocationZ {
-	x: u16,
-	y: u16,
-	z: i32
+pub struct CellLocationZ {
+	/// The x and y of the location
+	pub x_y: CellLocation,
+	/// The z-index
+	pub z: i32
 }
 
+/// A filter to specify exactly which images should be deleted
 #[derive(PartialEq, Debug, Clone)]
 pub enum WhichToDelete {
+	/// Every single visible image (does not include non-visible)
 	All,
+	/// Only delete those with the specific ImageId. If a PlacementId is specified, then this only
+	/// deletes images with both the ImageId AND the PlacementId
 	ImageId(ImageId, Option<PlacementId>),
-	NewestWithNumber(ImageId, Option<PlacementId>),
+	/// Only delete those with the specific Image Number. If a PlacementId is specified, then this
+	/// only deletes images with both the ImageId AND the PlacementId
+	NewestWithNumber(ImageNumber, Option<PlacementId>),
+	/// Only delete images which intersect with the cursor's current position
 	IntersectingWithCursor,
+	/// Delete all animation frames
 	AnimationFrames,
+	/// Delete all images that intersect at all with the given cell
 	PlacementsIntersectingCell(CellLocation),
+	/// Delete all images that intersect at all with the given cell (whose location includes a
+	/// z-index that also must be matched)
 	PlacementsIntersectingCellWithZ(CellLocationZ),
-	IdRange(RangeInclusive<NonZeroU32>),
+	/// Delete all images whose ids are contained in the given range
+	IdRange(RangeInclusive<ImageId>),
+	/// Delete all placements that intersect with the given cell column
 	PlacementsIntersectingColumn(u16),
+	/// Delete all placements that intersect with the given cell row
 	PlacementsIntersectingRow(u16),
+	/// Delete all placements that intersect with the given z-index
 	PlacementsWithZIndex(i32)
 }
 
 impl DeleteConfig {
-	fn write_to<W: Write>(&self, mut w: W) -> std::io::Result<W> {
+	pub(crate) fn write_to<W: Write>(&self, mut w: W) -> std::io::Result<W> {
 		let e = self.effect;
 
 		write!(w, ",d=")?;
@@ -75,7 +106,7 @@ impl DeleteConfig {
 			WhichToDelete::AnimationFrames => write!(w, "{}", e.maybe_upper('f'))?,
 			WhichToDelete::PlacementsIntersectingCell(CellLocation { x, y }) =>
 				write!(w, "{},x={x},y={y}", e.maybe_upper('p'))?,
-			WhichToDelete::PlacementsIntersectingCellWithZ(CellLocationZ { x, y, z }) =>
+			WhichToDelete::PlacementsIntersectingCellWithZ(CellLocationZ { x_y: CellLocation { x, y }, z }) =>
 				write!(w, "{},x={x},y={y},z={z}", e.maybe_upper('q'))?,
 			WhichToDelete::IdRange(range) => write!(
 				w,

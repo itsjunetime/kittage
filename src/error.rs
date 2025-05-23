@@ -124,7 +124,11 @@ pub enum TerminalError {
 	///
 	/// [`Direct`]: crate::Medium::Direct
 	#[error("No Data: {0}")]
-	NoData(String)
+	NoData(String),
+	/// "EFBIG" error code - too much data sent to the terminal for the provided
+	/// [`crate::ImageDimensions`]
+	#[error("File Too Large: {0}")]
+	FileTooLarge(String),
 }
 
 /// An error that can occur when we try to decode a [`TerminalError`] from an error code and
@@ -134,13 +138,15 @@ pub struct UnknownErrorCode<'a>(pub(crate) &'a str);
 impl<'a> TryFrom<(&'a str, &str)> for TerminalError {
 	type Error = UnknownErrorCode<'a>;
 	fn try_from(value: (&'a str, &str)) -> Result<Self, Self::Error> {
-		match value.0 {
-			"ENOENT" => Ok(Self::NoEntity(value.1.to_owned())),
-			"EINVAL" => Ok(Self::InvalidArgument(value.1.to_owned())),
-			"EBADF" => Ok(Self::BadFile(value.1.to_owned())),
-			"ENODATA" => Ok(Self::NoData(value.1.to_owned())),
-			x => Err(UnknownErrorCode(x))
-		}
+		let s = value.1.to_owned();
+		Ok(match value.0 {
+			"ENOENT" => Self::NoEntity(s),
+			"EINVAL" => Self::InvalidArgument(s),
+			"EBADF" => Self::BadFile(s),
+			"ENODATA" => Self::NoData(s),
+			"EFBIG" => Self::FileTooLarge(s),
+			x => Err(UnknownErrorCode(x))?
+		})
 	}
 }
 

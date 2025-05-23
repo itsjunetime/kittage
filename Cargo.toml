@@ -21,9 +21,10 @@ crossterm-tokio = ["dep:crossterm", "dep:futures-core", "dep:tokio"]
 
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["time", "macros", "rt-multi-thread"] }
-crossterm = { version = "0.29.0", default-features = false, features = ["event-stream"] }
-futures-core = "0.3.31"
+crossterm = { version = "0.29", default-features = false, features = ["event-stream"] }
+futures-core = "0.3"
 nix = { version = "0.30", features = ["fs"] }
+image = { version = "0.25", features = ["png"] }
 
 [lints.clippy]
 uninlined_format_args = "warn"

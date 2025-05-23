@@ -154,13 +154,13 @@ impl Medium<'_> {
 					// do some math and chunk it by like chunk_size * (8 / 6)? or something? but
 					// I'll do that later or smth. Either way, before we do that, we have to encode
 					// it to a string
-					let b64_encoded = STANDARD_NO_PAD.encode(data);
-					let chunk_size = chunk_size.0.get().into();
-					let total_chunks = b64_encoded.len().div_ceil(chunk_size);
+					let b64_encoded_bytes_per_chunk = usize::from(chunk_size.0.get()) * 4;
+					let pre_encoded_bytes_per_chunk = (b64_encoded_bytes_per_chunk / 4) * 3;
+					let total_chunks = data.len().div_ceil(pre_encoded_bytes_per_chunk);
 
 					// then, since we know that it's base64-encoded, we can be confident each
 					// character only takes up a single byte, so we can just chunk it by-byte
-					let mut chunks = b64_encoded.as_bytes().chunks(chunk_size);
+					let mut chunks = data.chunks(pre_encoded_bytes_per_chunk);
 
 					// we need to write the first one differently since it is just being added onto
 					// the end of the current command
@@ -392,7 +392,39 @@ pub enum Action<'image, 'data> {
 		/// transmitting and displaying in-one
 		placement_id: Option<PlacementId>
 	},
+	/// Query the terminal to determine if a specific image can be transmitted & displayed. The
+	/// following is quoted from the spec:
+	///
+	/// Since a client has no a-priori knowledge of whether it shares a filesystem/shared memory with the terminal emulator, it can send an id with the control data, using the i key (which can be an arbitrary positive integer up to 4294967295, it must not be zero). If it does so, the terminal emulator will reply after trying to load the image, saying whether loading was successful or not. For example:
+	///
+	/// ```text
+	/// <ESC>_Gi=31,s=10,v=2,t=s;<encoded /some-shared-memory-name><ESC>\
+	/// ```
+	///
+	/// to which the terminal emulator will reply (after trying to load the data):
+	///
+	/// ```text
+	/// <ESC>_Gi=31;error message or OK<ESC>\
+	/// ```
+	///
+	/// Here the i value will be the same as was sent by the client in the original request. The message data will be a ASCII encoded string containing only printable characters and spaces. The string will be OK if reading the pixel data succeeded or an error message.
+	///
+	/// Sometimes, using an id is not appropriate, for example, if you do not want to replace a previously sent image with the same id, or if you are sending a dummy image and do not want it stored by the terminal emulator. In that case, you can use the query action, set a=q. Then the terminal emulator will try to load the image and respond with either OK or an error, as above, but it will not replace an existing image with the same id, nor will it store the image.
+	///
+	/// We intend that any terminal emulator that wishes to support it can do so. To check if a terminal emulator supports the graphics protocol the best way is to send the above query action followed by a request for the [primary device attributes](https://vt100.net/docs/vt510-rm/DA1.html). If you get back an answer for the device attributes without getting back an answer for the query action the terminal emulator does not support the graphics protocol.
+	///
+	/// This means that terminal emulators that support the graphics protocol, must reply to query actions immediately without processing other input. Most terminal emulators handle input in a FIFO manner, anyway.
+	///
+	/// So for example, you could send:
+	///
+	/// ```text
+	/// <ESC>_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA<ESC>\<ESC>[c
+	/// ```
+	///
+	/// If you get back a response to the graphics query, the terminal emulator supports the protocol, if you get back a response to the device attributes query without a response to the graphics query, it does not.
 	Query(&'image Image<'data>),
+	/// Delete a specific set of images. See the [`DeleteConfig`] documentation for more details
+	/// about how to use
 	Delete(DeleteConfig),
 	TransmitAnimationFrames,
 	ControlAnimation,
@@ -431,7 +463,11 @@ impl Action<'_, '_> {
 			} => {
 				write!(writer, "p,i={image_id},p={placement_id},")?;
 				(config.write_to(writer)?, None)
-			}
+			},
+			Self::Delete(del) => {
+				write!(writer, "d")?;
+				(del.write_to(writer)?, None)
+			},
 			_ => todo!()
 		};
 
@@ -607,6 +643,10 @@ pub type PlacementId = NonZeroU32;
 /// [`IdentifierType::ImageId`]
 pub type ImageId = NonZeroU32;
 
+/// A number that can be used to identify an image sent to the terminal - see
+/// [`IdentifierType::ImageNumber`]
+pub type ImageNumber = NonZeroU32;
+
 pub(crate) fn write_b64<W: Write>(data: &[u8], writer: W) -> std::io::Result<W> {
 	let mut b64 = Base64Encoder::new(writer, &STANDARD_NO_PAD);
 	b64.write_all_allow_empty(data)?;
@@ -623,7 +663,8 @@ mod tests {
 		time::{SystemTime, UNIX_EPOCH}
 	};
 
-	use nix::{sys::stat::Mode, unistd::mkfifo};
+	use ::image::ImageReader;
+use nix::{sys::stat::Mode, unistd::mkfifo};
 
 	use super::*;
 	use crate::{
@@ -692,11 +733,14 @@ mod tests {
 		Ok(())
 	}
 
-	#[tokio::test]
-	async fn basic_functionality() {
+	fn png_path() -> Box<Path> {
 		let mut manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 		manifest_dir.push("kitty.png");
+		manifest_dir.into()
+	}
 
+	#[tokio::test]
+	async fn basic_functionality() {
 		let img = Image {
 			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
 			format: PixelFormat::Rgb24(
@@ -706,7 +750,7 @@ mod tests {
 				},
 				None
 			),
-			medium: Medium::File(manifest_dir.into())
+			medium: Medium::File(png_path())
 		};
 
 		spawn_kitty_with_image(img).unwrap();
@@ -734,5 +778,94 @@ mod tests {
 			err,
 			TransmitError::Terminal(TerminalError::NoData("Insufficient image data".into()))
 		);
+	}
+
+	#[tokio::test]
+	async fn direct_unchunked_rgb24_succeeds() {
+		let img_data = ImageReader::open(png_path()).unwrap().decode().unwrap().to_rgb8();
+		dbg!(&img_data);
+
+		let img = Image {
+			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
+			format: PixelFormat::Rgb24(
+				ImageDimensions {
+					width: img_data.width(),
+					height: img_data.height()
+				},
+				None
+			),
+			medium: Medium::Direct {
+				data: img_data.as_raw().into(),
+				chunk_size: None
+			}
+		};
+
+		spawn_kitty_with_image(img).unwrap();
+	}
+
+	#[tokio::test]
+	async fn direct_chunked_rgb24_succeeds() {
+		let img_data = ImageReader::open(png_path()).unwrap().decode().unwrap().to_rgb8();
+
+		let img = Image {
+			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
+			format: PixelFormat::Rgb24(
+				ImageDimensions {
+					width: img_data.width(),
+					height: img_data.height()
+				},
+				None
+			),
+			medium: Medium::Direct {
+				data: img_data.as_raw().into(),
+				chunk_size: Some(ChunkSize::new(NonZeroU16::new(32).unwrap()).unwrap())
+			}
+		};
+
+		spawn_kitty_with_image(img).unwrap();
+	}
+
+	#[tokio::test]
+	async fn direct_unchunked_rgba32_succeeds() {
+		let img_data = ImageReader::open(png_path()).unwrap().decode().unwrap().to_rgba8();
+
+		let img = Image {
+			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
+			format: PixelFormat::Rgba32(
+				ImageDimensions {
+					width: img_data.width(),
+					height: img_data.height()
+				},
+				None
+			),
+			medium: Medium::Direct {
+				data: img_data.as_raw().into(),
+				chunk_size: None
+			}
+		};
+
+		spawn_kitty_with_image(img).unwrap();
+	}
+
+	#[tokio::test]
+	async fn direct_chunked_rgba32_succeeds() {
+		let img_data = ImageReader::open(png_path()).unwrap().decode().unwrap().to_rgba8();
+
+		let img = Image {
+			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
+			format: PixelFormat::Rgba32(
+				ImageDimensions {
+					width: img_data.width(),
+					height: img_data.height()
+				},
+				None
+			),
+			medium: Medium::Direct {
+				data: img_data.as_raw().into(),
+				chunk_size: Some(ChunkSize::new(NonZeroU16::new(132).unwrap()).unwrap())
+			}
+		};
+
+		spawn_kitty_with_image(img).unwrap();
 	}
 }
