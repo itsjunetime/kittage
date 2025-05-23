@@ -25,6 +25,7 @@ crossterm = { version = "0.29", default-features = false, features = ["event-str
 futures-core = "0.3"
 nix = { version = "0.30", features = ["fs"] }
 image = { version = "0.25", features = ["png"] }
+flate2 = { version = "1", features = ["zlib-rs"] }
 
 [lints.clippy]
 uninlined_format_args = "warn"

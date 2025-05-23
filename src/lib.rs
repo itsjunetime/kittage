@@ -19,7 +19,6 @@ use std::{
 };
 
 use base64::{
-	Engine,
 	engine::{GeneralPurpose, general_purpose::STANDARD_NO_PAD},
 	write::EncoderWriter as Base64Encoder
 };
@@ -213,9 +212,14 @@ impl<T: Write + Sized> WriteUint for T {}
 /// The format of the image data that is being sent
 #[derive(PartialEq)]
 pub enum PixelFormat {
-	/// 3 bytes per pixel, with color in the sRGB color space
+	/// 3 bytes per pixel, with color in the sRGB color space. If you are using the
+	/// [`image`](https://crates.io/crates/image) crate, you can easily create conformant data with
+	/// the [`RgbImage`](https://docs.rs/image/latest/image/type.RgbImage.html) struct.
 	Rgb24(ImageDimensions, Option<Compression>),
-	/// 4 bytes per pixel (3 for the color and 1 for the alpha), with color in the sRGB color space
+	/// 4 bytes per pixel (3 for the color and 1 for the alpha), with color in the sRGB color
+	/// space. If you are using the [`image`](https://crates.io/crates/image) crate, you can easily
+	/// create conformant data with the
+	/// [`RgbaImage`](https://docs.rs/image/latest/image/type.RgbaImage.html) struct
 	Rgba32(ImageDimensions, Option<Compression>),
 	/// PNG data - you can specify if compression is being used, and if compression is being used
 	/// then you must also supply the total size, in bytes, of the compressed data (not how much
@@ -225,7 +229,6 @@ pub enum PixelFormat {
 }
 
 impl<W: Write> Encodable<W, 'f'> for PixelFormat {
-	// this isn't actually the default? but whatever, we aren't gonna touch it
 	const DEFAULT: Self = Self::Rgb24(
 		ImageDimensions {
 			width: 0,
@@ -337,7 +340,9 @@ impl_encodable_for_int!(
 #[derive(PartialEq, Clone, Copy)]
 pub enum Compression {
 	/// [RFC 1950](https://datatracker.ietf.org/doc/html/rfc1950.html) zlib based deflate
-	/// compression
+	/// compression. You can encode data to this format using the
+	/// [`flate2`](https://crates.io/crates/flate2) crate's
+	/// [`ZlibEncoder`](https://docs.rs/flate2/latest/flate2/write/struct.ZlibEncoder.html)
 	ZlibDeflate
 }
 
@@ -663,13 +668,14 @@ mod tests {
 		time::{SystemTime, UNIX_EPOCH}
 	};
 
+	use flate2::{write::ZlibEncoder, Compression as FlateCompression};
 	use ::image::ImageReader;
-use nix::{sys::stat::Mode, unistd::mkfifo};
+	use nix::{sys::stat::Mode, unistd::mkfifo};
 
 	use super::*;
 	use crate::{
 		error::{TerminalError, TransmitError},
-		image::{Image, parse_response}
+		image::{parse_response, Image}, Compression
 	};
 
 	fn spawn_kitty_get_io(input: &[u8]) -> String {
@@ -826,6 +832,31 @@ use nix::{sys::stat::Mode, unistd::mkfifo};
 	}
 
 	#[tokio::test]
+	async fn direct_unchunked_compressed_rgb24_succeeds() {
+		let img_data = ImageReader::open(png_path()).unwrap().decode().unwrap().to_rgb8();
+		dbg!(&img_data);
+		let dim = ImageDimensions { width: img_data.width(), height: img_data.height() };
+
+		let mut encoder = ZlibEncoder::new(Vec::new(), FlateCompression::fast());
+		encoder.write_all(&img_data).unwrap();
+		let compressed = encoder.finish().unwrap();
+
+		let img = Image {
+			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
+			format: PixelFormat::Rgb24(
+				dim,
+				Some(Compression::ZlibDeflate)
+			),
+			medium: Medium::Direct {
+				data: compressed.into(),
+				chunk_size: None
+			}
+		};
+
+		spawn_kitty_with_image(img).unwrap();
+	}
+
+	#[tokio::test]
 	async fn direct_unchunked_rgba32_succeeds() {
 		let img_data = ImageReader::open(png_path()).unwrap().decode().unwrap().to_rgba8();
 
@@ -867,5 +898,21 @@ use nix::{sys::stat::Mode, unistd::mkfifo};
 		};
 
 		spawn_kitty_with_image(img).unwrap();
+	}
+
+	#[tokio::test]
+	async fn direct_unchunked_png_succeeds() {
+		let img_data = std::fs::read(png_path()).unwrap();
+
+		let img = Image {
+			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
+			format: PixelFormat::Png(None),
+			medium: Medium::Direct {
+				data: img_data.into(),
+				chunk_size: None
+			}
+		};
+
+		spawn_kitty_with_image(img).unwrap()
 	}
 }
