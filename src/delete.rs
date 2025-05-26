@@ -106,8 +106,10 @@ impl DeleteConfig {
 			WhichToDelete::AnimationFrames => write!(w, "{}", e.maybe_upper('f'))?,
 			WhichToDelete::PlacementsIntersectingCell(CellLocation { x, y }) =>
 				write!(w, "{},x={x},y={y}", e.maybe_upper('p'))?,
-			WhichToDelete::PlacementsIntersectingCellWithZ(CellLocationZ { x_y: CellLocation { x, y }, z }) =>
-				write!(w, "{},x={x},y={y},z={z}", e.maybe_upper('q'))?,
+			WhichToDelete::PlacementsIntersectingCellWithZ(CellLocationZ {
+				x_y: CellLocation { x, y },
+				z
+			}) => write!(w, "{},x={x},y={y},z={z}", e.maybe_upper('q'))?,
 			WhichToDelete::IdRange(range) => write!(
 				w,
 				"{},x={},y={}",

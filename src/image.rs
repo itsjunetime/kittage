@@ -4,9 +4,10 @@ use std::{borrow::Cow, io::Write, num::NonZeroU32, str::Split, time::Duration};
 
 use crate::{
 	AnyValueOrSpecific, AsyncInputReader, Encodable, IMAGE_NUMBER_KEY, IdentifierType, ImageId,
-	InputReader, Medium, NumberOrId, PLACEMENT_ID_KEY, PixelFormat, PlacementId, TRANSFER_ID_KEY,
-	WriteUint,
-	error::{ParseError, TerminalError, TransmitError}
+	InputReader, NumberOrId, PLACEMENT_ID_KEY, PixelFormat, PlacementId, TRANSFER_ID_KEY,
+	VERBOSITY_LEVEL_KEY, Verbosity, WriteUint,
+	error::{ParseError, TerminalError, TransmitError},
+	medium::Medium
 };
 
 /// The data necessary to transmit or query or display (etc) an image on/to a receiving terminal
@@ -26,7 +27,8 @@ impl Image<'_> {
 	pub(crate) fn write_transmit_to<W: Write>(
 		&self,
 		mut writer: W,
-		placement_id: Option<NonZeroU32>
+		placement_id: Option<NonZeroU32>,
+		verbosity: Verbosity
 	) -> std::io::Result<W> {
 		write!(writer, "\x1b_G")?;
 		match self.num_or_id {
@@ -37,6 +39,8 @@ impl Image<'_> {
 		if let Some(p_id) = placement_id {
 			writer = writer.write_uint::<PLACEMENT_ID_KEY, _>(p_id.get())?;
 		}
+
+		writer = writer.write_uint::<VERBOSITY_LEVEL_KEY, _>(verbosity as u8)?;
 
 		// Write all format data, up to (and including) the ';'
 		writer = self.format.write_kv_encoded(writer)?;

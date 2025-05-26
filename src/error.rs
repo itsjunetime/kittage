@@ -128,7 +128,7 @@ pub enum TerminalError {
 	/// "EFBIG" error code - too much data sent to the terminal for the provided
 	/// [`crate::ImageDimensions`]
 	#[error("File Too Large: {0}")]
-	FileTooLarge(String),
+	FileTooLarge(String)
 }
 
 /// An error that can occur when we try to decode a [`TerminalError`] from an error code and

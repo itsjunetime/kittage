@@ -1,30 +1,18 @@
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+pub mod action;
 pub mod delete;
 pub mod display;
 pub mod error;
 #[cfg(any(test, feature = "crossterm-tokio"))]
 pub mod event_stream;
 pub mod image;
+pub mod medium;
 
-use std::{
-	borrow::Cow,
-	error::Error,
-	fmt::Display,
-	io::Write,
-	num::{NonZeroU16, NonZeroU32},
-	path::Path,
-	time::Duration
-};
+use std::{error::Error, fmt::Display, io::Write, num::NonZeroU32, time::Duration};
 
-use base64::{
-	engine::{GeneralPurpose, general_purpose::STANDARD_NO_PAD},
-	write::EncoderWriter as Base64Encoder
-};
-use delete::DeleteConfig;
-use display::DisplayConfig;
-use error::TransmitError;
+use base64::{engine::GeneralPurpose, write::EncoderWriter as Base64Encoder};
 use image::{Image, read_parse_response, read_parse_response_async};
 
 trait Encoder<W: Write>: Write {
@@ -52,149 +40,6 @@ trait Encodable<W: Write, const KEY: char>: PartialEq + Sized {
 		self.write_value_to(writer)
 	}
 	fn write_value_to(&self, writer: W) -> std::io::Result<W>;
-}
-
-/// A Shared memory object which can be used for transferring an image over to the terminal. Works
-/// on both unix and windows
-pub struct SharedMemObject {
-	#[cfg(unix)]
-	inner: psx_shm::Shm,
-
-	#[cfg(windows)]
-	inner: winmmf::MemoryMappedFile<mmf::RwLock<'static>>
-}
-
-impl SharedMemObject {
-	/// Construct a new instance after opening a [`psx_shm::Shm`]
-	#[cfg(unix)]
-	pub fn new(inner: psx_shm::Shm) -> Self {
-		Self { inner }
-	}
-
-	/// Construct a new instance after opening a [`winmmf::MemoryMappedFile`]
-	#[cfg(windows)]
-	pub fn new(inner: winmmf::MemoryMappedFile<mmf::RwLock<'static>>) -> Self {
-		Self { inner }
-	}
-
-	fn name(&self) -> Box<str> {
-		#[cfg(unix)]
-		{
-			self.inner.name().into()
-		}
-
-		#[cfg(windows)]
-		{
-			self.inner.fullname().into()
-		}
-	}
-}
-
-/// The amount of data that should be sent within a single escape code when transferring data via a
-/// 'direct' medium (see [`Medium::Direct`]) - this data does not necessarily *need* to be chunked
-/// when sending directly, but not chunking it increases the likelihood that the transferred image
-/// will be rejected, as escape codes have maximum lengths on many platforms. See
-/// [`ChunkSize::new`] for specifications of what it should contain
-//
-// INVARIANT: `self.0` must always be <= 1024
-pub struct ChunkSize(NonZeroU16);
-
-impl ChunkSize {
-	/// `size` represents the number of 4-byte chunks of (already base64-encoded) data sent within
-	/// each escape code. If it is greater than 1024, this will return [`None`] as the protocol
-	/// specifies that no more than 4096 bytes may be sent at a time.
-	pub fn new(size: NonZeroU16) -> Option<Self> {
-		(size.get() <= 1024).then_some(Self(size))
-	}
-}
-
-/// The medium through which the file itself will be transferred to the terminal
-pub enum Medium<'data> {
-	/// Direct (the data is transmitted within the escape code itself)
-	Direct {
-		/// The maximum length of data sent within each escape code. To quote from the
-		/// specification:
-		///
-		/// > Remote clients, those that are unable to use the filesystem/shared memory to transmit data, must send the pixel data directly using escape codes. Since escape codes are of limited maximum length, the data will need to be chunked up for transfer.
-		///
-		/// See the documentation on [`ChunkSize`] for more details
-		chunk_size: Option<ChunkSize>,
-		/// The image data to be displayed - when using this to display an [`Image`] (or within an
-		/// [`Action`]), this data must be of the same underlying image format as the
-		/// [`PixelFormat`] specified.
-		data: Cow<'data, [u8]>
-	},
-	/// A simple file (regular files only, not named pipes, device files, etc.)
-	File(Box<Path>),
-	/// A temporary file, the terminal emulator will delete the file after reading the pixel data.
-	/// For security reasons the terminal emulator should only delete the file if it is in a known
-	/// temporary directory, such as `/tmp`, `/dev/shm`, `TMPDIR` env var if present, and any
-	/// platform specific temporary directories and the file has the string `tty-graphics-protocol`
-	/// in its full file path
-	TempFile(Box<Path>),
-	/// A _shared memory object_, which on POSIX systems is a [POSIX shared memory
-	/// object](https://pubs.opengroup.org/onlinepubs/9699919799/functions/shm_open.html)
-	/// (represented here with a [`psx_shm::Shm`] and on Windows is a [Named shared memory
-	/// object](https://docs.microsoft.com/en-us/windows/win32/memory/creating-named-shared-memory)
-	/// (represented here with a [`winmmf::MemoryMappedFile`]). The terminal emulator must read the
-	/// data from the memory object and then unlink and close it on POSIX and just close it on
-	/// Windows.
-	SharedMemObject(SharedMemObject)
-}
-
-impl Medium<'_> {
-	fn write_data<W: Write>(&self, mut writer: W) -> Result<W, std::io::Error> {
-		let name: Box<str>;
-		let (key, data) = match self {
-			Self::Direct { data, chunk_size } => {
-				if let Some(chunk_size) = chunk_size {
-					write!(writer, ",t=d,")?;
-					// spec says we first have to encode, and THEN chunk it. I think that we could
-					// do some math and chunk it by like chunk_size * (8 / 6)? or something? but
-					// I'll do that later or smth. Either way, before we do that, we have to encode
-					// it to a string
-					let b64_encoded_bytes_per_chunk = usize::from(chunk_size.0.get()) * 4;
-					let pre_encoded_bytes_per_chunk = (b64_encoded_bytes_per_chunk / 4) * 3;
-					let total_chunks = data.len().div_ceil(pre_encoded_bytes_per_chunk);
-
-					// then, since we know that it's base64-encoded, we can be confident each
-					// character only takes up a single byte, so we can just chunk it by-byte
-					let mut chunks = data.chunks(pre_encoded_bytes_per_chunk);
-
-					// we need to write the first one differently since it is just being added onto
-					// the end of the current command
-					if let Some(first) = chunks.next() {
-						write!(writer, "m={};", u8::from(total_chunks != 1))?;
-						writer = write_b64(first, writer)?;
-						write!(writer, "\x1b\\")?;
-					}
-
-					// then all the ones after can just be printed in the same way
-					for (idx, chunk) in chunks.enumerate() {
-						write!(writer, "\x1b_Gm={};", u8::from(total_chunks != idx + 2))?;
-						writer = write_b64(chunk, writer)?;
-						write!(writer, "\x1b\\")?;
-					}
-
-					return Ok(writer);
-				}
-
-				// and if we don't chunk it at all, then just give it to be printed normally
-				('d', &**data)
-			}
-			Self::File(path) => ('f', path.as_os_str().as_encoded_bytes()),
-			Self::TempFile(path) => ('t', path.as_os_str().as_encoded_bytes()),
-			Self::SharedMemObject(o) => {
-				name = o.name();
-				('s', name.as_bytes())
-			}
-		};
-
-		write!(writer, ",t={key};")?;
-		let mut writer = Base64Encoder::new(writer, &STANDARD_NO_PAD);
-		writer.write_all_allow_empty(data)?;
-		writer.finish()
-	}
 }
 
 pub(crate) trait WriteUint: Write + Sized {
@@ -313,6 +158,8 @@ pub(crate) const VIRTUAL_PLACEMENT_KEY: char = 'U';
 pub(crate) const PARENT_ID_KEY: char = 'P';
 pub(crate) const PARENT_PLACEMENT_KEY: char = 'Q';
 
+pub(crate) const VERBOSITY_LEVEL_KEY: char = 'q';
+
 macro_rules! impl_encodable_for_int {
 	($int:ty => $($key:expr,)+) => {
 		$(impl<W: Write> Encodable<W, $key> for $int {
@@ -325,7 +172,7 @@ macro_rules! impl_encodable_for_int {
 }
 
 impl_encodable_for_int!(i32 => Z_INDEX_KEY, RELATIVE_HORIZ_CELL_OFFSET_KEY, RELATIVE_VERT_CELL_OFFSET_KEY, );
-impl_encodable_for_int!(u8 => REMAINING_CHUNKS_KEY,);
+impl_encodable_for_int!(u8 => REMAINING_CHUNKS_KEY, VERBOSITY_LEVEL_KEY,);
 impl_encodable_for_int!(u16 => DISPLAY_COLS_KEY, DISPLAY_ROWS_KEY,);
 impl_encodable_for_int!(
 	u32 => SOURCE_WIDTH_KEY, SOURCE_HEIGHT_KEY, TRANSFER_ID_KEY, IMAGE_NUMBER_KEY,
@@ -358,192 +205,6 @@ impl<W: Write> Encodable<W, 'o'> for Option<Compression> {
 		}
 
 		Ok(writer)
-	}
-}
-
-/// The different actions one can take to interact with a terminal which supports the kitty image
-/// protocol. This is the main interaction point with the terminal - one should construct an
-/// [`Action`] and [`Action::send`] it
-pub enum Action<'image, 'data> {
-	/// This simply sends the image data to the terminal, but does not display it. It also
-	/// transfers ownership of the image data to the terminal - for example, if a temp file is used
-	/// to send the data, that file will be deleted after it is transmitted to the terminal. Once a
-	/// `Transmit` is successfully sent, one can then display the sent image with
-	/// [`Action::Display`]
-	Transmit(Image<'data>),
-	/// Display an image which was already transmitted to (and is now owned by) the terminal
-	Display {
-		/// The image ID of the image which you want to display
-		image_id: ImageId,
-		/// A 'placement ID' for this display - see the documentation for [`PlacementId`] for more
-		/// info. This must be sent when displaying something that was already transmitted, but is
-		/// optional when transmitting and displaying in-one (e.g. with
-		/// [`Self::TransmitAndDisplay`]
-		placement_id: PlacementId,
-		/// The details about exactly how this image should be displayed - the location, cursor
-		/// movement, etc
-		config: DisplayConfig
-	},
-	/// Transmit and then display an image. Should act effectively the same as calling
-	/// [`Action::Transmit`] and then [`Action::Display`] with the returned image id.
-	TransmitAndDisplay {
-		/// The image which will be transferred to the terminal and then displayed immediately
-		/// after
-		image: Image<'data>,
-		/// The details about exactly how this image should be displayed - the location, cursor
-		/// movement, etc
-		config: DisplayConfig,
-		/// The placement ID for this display, if you'd like to use one. It is not necessary when
-		/// transmitting and displaying in-one
-		placement_id: Option<PlacementId>
-	},
-	/// Query the terminal to determine if a specific image can be transmitted & displayed. The
-	/// following is quoted from the spec:
-	///
-	/// Since a client has no a-priori knowledge of whether it shares a filesystem/shared memory with the terminal emulator, it can send an id with the control data, using the i key (which can be an arbitrary positive integer up to 4294967295, it must not be zero). If it does so, the terminal emulator will reply after trying to load the image, saying whether loading was successful or not. For example:
-	///
-	/// ```text
-	/// <ESC>_Gi=31,s=10,v=2,t=s;<encoded /some-shared-memory-name><ESC>\
-	/// ```
-	///
-	/// to which the terminal emulator will reply (after trying to load the data):
-	///
-	/// ```text
-	/// <ESC>_Gi=31;error message or OK<ESC>\
-	/// ```
-	///
-	/// Here the i value will be the same as was sent by the client in the original request. The message data will be a ASCII encoded string containing only printable characters and spaces. The string will be OK if reading the pixel data succeeded or an error message.
-	///
-	/// Sometimes, using an id is not appropriate, for example, if you do not want to replace a previously sent image with the same id, or if you are sending a dummy image and do not want it stored by the terminal emulator. In that case, you can use the query action, set a=q. Then the terminal emulator will try to load the image and respond with either OK or an error, as above, but it will not replace an existing image with the same id, nor will it store the image.
-	///
-	/// We intend that any terminal emulator that wishes to support it can do so. To check if a terminal emulator supports the graphics protocol the best way is to send the above query action followed by a request for the [primary device attributes](https://vt100.net/docs/vt510-rm/DA1.html). If you get back an answer for the device attributes without getting back an answer for the query action the terminal emulator does not support the graphics protocol.
-	///
-	/// This means that terminal emulators that support the graphics protocol, must reply to query actions immediately without processing other input. Most terminal emulators handle input in a FIFO manner, anyway.
-	///
-	/// So for example, you could send:
-	///
-	/// ```text
-	/// <ESC>_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA<ESC>\<ESC>[c
-	/// ```
-	///
-	/// If you get back a response to the graphics query, the terminal emulator supports the protocol, if you get back a response to the device attributes query without a response to the graphics query, it does not.
-	Query(&'image Image<'data>),
-	/// Delete a specific set of images. See the [`DeleteConfig`] documentation for more details
-	/// about how to use
-	Delete(DeleteConfig),
-	TransmitAnimationFrames,
-	ControlAnimation,
-	ComposeAnimationFrames
-}
-
-impl Action<'_, '_> {
-	/// Write the transmit code for this [`Action`] to `writer` - this is the first part of
-	/// [`Self::execute`] and only does a part of what is necessary to fully interact with a
-	/// terminal. The full details can be found at [`Self::execute`].
-	pub fn write_transmit_to<W: Write>(self, mut writer: W) -> std::io::Result<W> {
-		write!(writer, "a=")?;
-
-		let (mut writer, image_to_unlink) = match self {
-			Self::Transmit(image) => {
-				write!(writer, "t,")?;
-				(image.write_transmit_to(writer, None)?, Some(image))
-			}
-			Self::TransmitAndDisplay {
-				image,
-				config,
-				placement_id
-			} => {
-				write!(writer, "T,")?;
-				writer = config.write_to(writer)?;
-				(image.write_transmit_to(writer, placement_id)?, Some(image))
-			}
-			Self::Query(image) => {
-				write!(writer, "q,")?;
-				(image.write_transmit_to(writer, None)?, None)
-			}
-			Self::Display {
-				image_id,
-				placement_id,
-				config
-			} => {
-				write!(writer, "p,i={image_id},p={placement_id},")?;
-				(config.write_to(writer)?, None)
-			},
-			Self::Delete(del) => {
-				write!(writer, "d")?;
-				(del.write_to(writer)?, None)
-			},
-			_ => todo!()
-		};
-
-		writer.flush()?;
-
-		if let Some(img) = image_to_unlink {
-			img.unlink_if_shm();
-		}
-
-		Ok(writer)
-	}
-
-	fn extract_num_or_id_and_placement(&self) -> (NumberOrId, Option<PlacementId>) {
-		match self {
-			Self::Transmit(img) => (img.num_or_id, None),
-			Self::TransmitAndDisplay {
-				image,
-				placement_id,
-				..
-			} => (image.num_or_id, *placement_id),
-			Self::Query(img) => (img.num_or_id, None),
-			Self::Display {
-				image_id,
-				placement_id,
-				..
-			} => (NumberOrId::Id(*image_id), Some(*placement_id)),
-			_ => todo!()
-		}
-	}
-
-	/// This is the main point of interaction with this library - to display an image, you need to
-	/// create an [`Action`] and then call this function on it.
-	///
-	/// This function does two main things:
-	/// 1. Writes the necessary escape codes to `writer`, then flushes it.
-	/// 2. Unlinks the shared memory object if necessary (see [`Medium::SharedMemObject`])
-	/// 3. Reads in the terminal's response via `reader`
-	/// 4. Parses the terminal's response and returns any errors that occur or are transmitted
-	///
-	/// Steps 1 & 2 are performed simply by calling [`Self::write_transmit_to`], so this library
-	/// can be used in a sans-io method by using that instead. ([TODO]: make the parse method pub
-	/// in a more ergonomic API)
-	///
-	/// For this function to work correctly, `writer` should be writing directly to something that
-	/// flushes directly to a kitty-supporting terminal. This function assumes that, once flushed
-	/// to `writer`, the terminal will respond and this response can be read by `reader`.
-	pub fn execute<W: Write, I: InputReader>(
-		self,
-		writer: W,
-		reader: I
-	) -> Result<(W, ImageId), TransmitError<I::Error>> {
-		let (id_or_num, placement_id) = self.extract_num_or_id_and_placement();
-
-		let writer = self.write_transmit_to(writer)?;
-
-		let img_id = read_parse_response(reader, id_or_num, placement_id)?;
-		Ok((writer, img_id))
-	}
-
-	/// An async version of [`Self::execute`] - check its documentation for more details
-	pub async fn execute_async<W: Write, I: AsyncInputReader>(
-		self,
-		writer: W,
-		reader: I
-	) -> Result<(W, ImageId), TransmitError<I::Error>> {
-		let (id_or_num, placement_id) = self.extract_num_or_id_and_placement();
-
-		let writer = self.write_transmit_to(writer)?;
-
-		let img_id = read_parse_response_async(reader, id_or_num, placement_id).await?;
-		Ok((writer, img_id))
 	}
 }
 
@@ -652,10 +313,17 @@ pub type ImageId = NonZeroU32;
 /// [`IdentifierType::ImageNumber`]
 pub type ImageNumber = NonZeroU32;
 
-pub(crate) fn write_b64<W: Write>(data: &[u8], writer: W) -> std::io::Result<W> {
-	let mut b64 = Base64Encoder::new(writer, &STANDARD_NO_PAD);
-	b64.write_all_allow_empty(data)?;
-	b64.finish()
+/// A way to configure how the terminal responds to all the commands written to it
+#[derive(Clone, Copy, PartialEq, Hash, Debug, Default)]
+pub enum Verbosity {
+	/// The terminal should respond with an OK or error code to everything
+	#[default]
+	All = 0,
+	/// The terminal should respond with an error code if anything went wrong, but should otherwise
+	/// be silent
+	ErrorsOnly = 1,
+	/// The terminal should not respond at all, regardless of if your operation succeeds or fails
+	Silent = 2
 }
 
 #[cfg(test)]
@@ -663,19 +331,22 @@ mod tests {
 	use std::{
 		convert::Infallible,
 		hash::{DefaultHasher, Hasher},
-		path::PathBuf,
+		num::NonZeroU16,
+		path::{Path, PathBuf},
 		process::{Command, Stdio},
 		time::{SystemTime, UNIX_EPOCH}
 	};
 
-	use flate2::{write::ZlibEncoder, Compression as FlateCompression};
 	use ::image::ImageReader;
+	use flate2::{Compression as FlateCompression, write::ZlibEncoder};
 	use nix::{sys::stat::Mode, unistd::mkfifo};
 
 	use super::*;
 	use crate::{
+		Compression,
 		error::{TerminalError, TransmitError},
-		image::{parse_response, Image}, Compression
+		image::{Image, parse_response},
+		medium::{ChunkSize, Medium}
 	};
 
 	fn spawn_kitty_get_io(input: &[u8]) -> String {
@@ -721,7 +392,8 @@ mod tests {
 
 	fn spawn_kitty_with_image(img: Image) -> Result<(), TransmitError<Infallible>> {
 		let mut output = Vec::new();
-		img.write_transmit_to(&mut output, None).unwrap();
+		img.write_transmit_to(&mut output, None, Verbosity::All)
+			.unwrap();
 
 		println!(
 			"here's output: {}",
@@ -788,7 +460,11 @@ mod tests {
 
 	#[tokio::test]
 	async fn direct_unchunked_rgb24_succeeds() {
-		let img_data = ImageReader::open(png_path()).unwrap().decode().unwrap().to_rgb8();
+		let img_data = ImageReader::open(png_path())
+			.unwrap()
+			.decode()
+			.unwrap()
+			.to_rgb8();
 		dbg!(&img_data);
 
 		let img = Image {
@@ -811,7 +487,11 @@ mod tests {
 
 	#[tokio::test]
 	async fn direct_chunked_rgb24_succeeds() {
-		let img_data = ImageReader::open(png_path()).unwrap().decode().unwrap().to_rgb8();
+		let img_data = ImageReader::open(png_path())
+			.unwrap()
+			.decode()
+			.unwrap()
+			.to_rgb8();
 
 		let img = Image {
 			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
@@ -833,9 +513,16 @@ mod tests {
 
 	#[tokio::test]
 	async fn direct_unchunked_compressed_rgb24_succeeds() {
-		let img_data = ImageReader::open(png_path()).unwrap().decode().unwrap().to_rgb8();
+		let img_data = ImageReader::open(png_path())
+			.unwrap()
+			.decode()
+			.unwrap()
+			.to_rgb8();
 		dbg!(&img_data);
-		let dim = ImageDimensions { width: img_data.width(), height: img_data.height() };
+		let dim = ImageDimensions {
+			width: img_data.width(),
+			height: img_data.height()
+		};
 
 		let mut encoder = ZlibEncoder::new(Vec::new(), FlateCompression::fast());
 		encoder.write_all(&img_data).unwrap();
@@ -843,10 +530,7 @@ mod tests {
 
 		let img = Image {
 			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
-			format: PixelFormat::Rgb24(
-				dim,
-				Some(Compression::ZlibDeflate)
-			),
+			format: PixelFormat::Rgb24(dim, Some(Compression::ZlibDeflate)),
 			medium: Medium::Direct {
 				data: compressed.into(),
 				chunk_size: None
@@ -858,7 +542,11 @@ mod tests {
 
 	#[tokio::test]
 	async fn direct_unchunked_rgba32_succeeds() {
-		let img_data = ImageReader::open(png_path()).unwrap().decode().unwrap().to_rgba8();
+		let img_data = ImageReader::open(png_path())
+			.unwrap()
+			.decode()
+			.unwrap()
+			.to_rgba8();
 
 		let img = Image {
 			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
@@ -880,7 +568,11 @@ mod tests {
 
 	#[tokio::test]
 	async fn direct_chunked_rgba32_succeeds() {
-		let img_data = ImageReader::open(png_path()).unwrap().decode().unwrap().to_rgba8();
+		let img_data = ImageReader::open(png_path())
+			.unwrap()
+			.decode()
+			.unwrap()
+			.to_rgba8();
 
 		let img = Image {
 			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
@@ -911,6 +603,38 @@ mod tests {
 				data: img_data.into(),
 				chunk_size: None
 			}
+		};
+
+		spawn_kitty_with_image(img).unwrap()
+	}
+
+	#[tokio::test]
+	async fn direct_unchunked_compressed_png_succeeds() {
+		let img_data = std::fs::read(png_path()).unwrap();
+
+		let precompressed_size = u32::try_from(img_data.len()).unwrap();
+		let mut compressor = ZlibEncoder::new(Vec::new(), FlateCompression::fast());
+		compressor.write_all(&img_data).unwrap();
+		let img_data = compressor.finish().unwrap();
+
+		let img = Image {
+			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
+			format: PixelFormat::Png(Some((Compression::ZlibDeflate, precompressed_size))),
+			medium: Medium::Direct {
+				data: img_data.into(),
+				chunk_size: None
+			}
+		};
+
+		spawn_kitty_with_image(img).unwrap()
+	}
+
+	#[tokio::test]
+	async fn file_path_png_succeeds() {
+		let img = Image {
+			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
+			format: PixelFormat::Png(None),
+			medium: Medium::File(png_path())
 		};
 
 		spawn_kitty_with_image(img).unwrap()
