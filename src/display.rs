@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// How the cursor should act after an image is displayed
-#[derive(Default, PartialEq, Clone, Copy)]
+#[derive(Default, PartialEq, Clone, Copy, Debug)]
 #[repr(u8)]
 pub enum CursorMovementPolicy {
 	/// The cursor should move to the cell directly following the last cell of the image
@@ -23,17 +23,18 @@ pub enum CursorMovementPolicy {
 
 /// The details of how a specific image should be dislpayed onto the terminal surface. used in e.g.
 /// [`crate::Action::TransmitAndDisplay`] and [`crate::Action::Display`]
+#[derive(Default, Debug, PartialEq, Clone)]
 pub struct DisplayConfig {
 	/// The location to display it at
-	location: DisplayLocation,
+	pub location: DisplayLocation,
 	/// Cursor movement policy; see enum documentation for more details
-	cursor_movement: CursorMovementPolicy,
+	pub cursor_movement: CursorMovementPolicy,
 	/// If true, creates a virtual placement for a unicode placeholder
-	create_virtual_placement: bool,
+	pub create_virtual_placement: bool,
 	/// The id of a parent image for relative placement
-	parent_id: ImageId,
+	pub parent_id: Option<ImageId>,
 	/// The id of a placement in the parent image for relative placement
-	parent_placement: ImageId
+	pub parent_placement: Option<ImageId>
 }
 
 impl DisplayConfig {
@@ -49,41 +50,49 @@ impl DisplayConfig {
 		if self.create_virtual_placement {
 			write!(writer, ",{VIRTUAL_PLACEMENT_KEY}=1")?;
 		}
-		writer
-			.write_uint::<PARENT_ID_KEY, _>(self.parent_id.get())?
-			.write_uint::<PARENT_PLACEMENT_KEY, _>(self.parent_placement.get())
+
+		if let Some(parent_id) = self.parent_id {
+			writer = writer.write_uint::<PARENT_ID_KEY, _>(parent_id.get())?;
+		}
+
+		if let Some(parent_placement) = self.parent_placement {
+			writer = writer.write_uint::<PARENT_PLACEMENT_KEY, _>(parent_placement.get())?;
+		}
+
+		Ok(writer)
 	}
 }
 
 /// Fields to specify exactly where to place an image (and specifically what part of an image) on
 /// the terminal surface. Used within [`DisplayConfig`]
+#[derive(Default, Debug, PartialEq, Clone)]
 pub struct DisplayLocation {
 	/// The left edge (in pixels) of the image area to display. If > 0, this can be used to crop
 	/// the image from the left side
-	x: u32,
+	pub x: u32,
 	/// The top edge (in pixels) of the image area to display. If > 0, this can be used to crop the
 	/// image from the top
-	y: u32,
+	pub y: u32,
 	/// The width (in pixels) of the image area to display. If left unspecified, the entire width
 	/// is used.
-	width: u32,
+	pub width: u32,
 	/// The height (in pixels) of the image area to display. If left unspecified, the entire width
 	/// is used.
-	height: u32,
+	pub height: u32,
 	/// The x-offset within the first cell at which to start displaying the image
-	x_offset: usize,
+	pub x_offset: usize,
 	/// The y-offset within the first cell at which to start displaying the image
-	y_offset: usize,
+	pub y_offset: usize,
 	/// The number of columns to display the image over
-	columns: u16,
+	pub columns: u16,
 	/// The number of rows to display the image over
-	rows: u16,
+	pub rows: u16,
 	/// The z-index vertical stacking order ofthe image
-	z_index: i32,
+	pub z_index: i32,
 	/// The offset cells in the horizontal direction for relative placement
-	horizontal_offset: i32,
+	pub horizontal_offset: i32,
 	/// The offset in cells in the vertical direction for relative placement
-	vertical_offset: i32
+	pub vertical_offset: i32
 }
 
 impl DisplayLocation {

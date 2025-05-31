@@ -13,6 +13,7 @@ use crate::Encoder;
 /// [`ChunkSize::new`] for specifications of what it should contain
 //
 // INVARIANT: `self.0` must always be <= 1024
+#[derive(Debug, PartialEq)]
 pub struct ChunkSize(NonZeroU16);
 
 impl ChunkSize {
@@ -24,43 +25,14 @@ impl ChunkSize {
 	}
 }
 
-/// A Shared memory object which can be used for transferring an image over to the terminal. Works
-/// on both unix and windows
-pub struct SharedMemObject {
-	#[cfg(unix)]
-	inner: psx_shm::Shm,
-
-	#[cfg(windows)]
-	inner: winmmf::MemoryMappedFile<mmf::RwLock<'static>>
-}
-
-impl SharedMemObject {
-	/// Construct a new instance after opening a [`psx_shm::Shm`]
-	#[cfg(unix)]
-	pub fn new(inner: psx_shm::Shm) -> Self {
-		Self { inner }
-	}
-
-	/// Construct a new instance after opening a [`winmmf::MemoryMappedFile`]
-	#[cfg(windows)]
-	pub fn new(inner: winmmf::MemoryMappedFile<mmf::RwLock<'static>>) -> Self {
-		Self { inner }
-	}
-
-	fn name(&self) -> Box<str> {
-		#[cfg(unix)]
-		{
-			self.inner.name().into()
-		}
-
-		#[cfg(windows)]
-		{
-			self.inner.fullname().into()
-		}
+impl Default for ChunkSize {
+	fn default() -> Self {
+		Self(NonZeroU16::new(1024).unwrap())
 	}
 }
 
 /// The medium through which the file itself will be transferred to the terminal
+#[derive(Debug, PartialEq)]
 pub enum Medium<'data> {
 	/// Direct (the data is transmitted within the escape code itself)
 	Direct {
@@ -91,7 +63,7 @@ pub enum Medium<'data> {
 	/// (represented here with a [`winmmf::MemoryMappedFile`]). The terminal emulator must read the
 	/// data from the memory object and then unlink and close it on POSIX and just close it on
 	/// Windows.
-	SharedMemObject(SharedMemObject)
+	SharedMemObject { name: Cow<'data, str> }
 }
 
 pub(crate) fn write_b64<W: Write>(data: &[u8], writer: W) -> std::io::Result<W> {
@@ -102,7 +74,6 @@ pub(crate) fn write_b64<W: Write>(data: &[u8], writer: W) -> std::io::Result<W> 
 
 impl Medium<'_> {
 	pub(crate) fn write_data<W: Write>(&self, mut writer: W) -> Result<W, std::io::Error> {
-		let name: Box<str>;
 		let (key, data) = match self {
 			Self::Direct { data, chunk_size } => {
 				if let Some(chunk_size) = chunk_size {
@@ -142,10 +113,7 @@ impl Medium<'_> {
 			}
 			Self::File(path) => ('f', path.as_os_str().as_encoded_bytes()),
 			Self::TempFile(path) => ('t', path.as_os_str().as_encoded_bytes()),
-			Self::SharedMemObject(o) => {
-				name = o.name();
-				('s', name.as_bytes())
-			}
+			Self::SharedMemObject { name } => ('s', name.as_bytes())
 		};
 
 		write!(writer, ",t={key};")?;

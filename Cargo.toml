@@ -6,22 +6,23 @@ edition = "2024"
 [dependencies]
 base64 = "0.22"
 thiserror = "2.0"
-crossterm = { version = "0.29", default-features = false, features = ["event-stream"], optional = true }
+crossterm = { version = "0.29", default-features = false, features = ["event-stream", "bracketed-paste"], optional = true }
 futures-core = { version = "0.3.31", optional = true }
 tokio = { version = "1", default-features = false, features = ["time"], optional = true }
+image = { version = "0.25", default-features = false, optional = true }
 
 [target.'cfg(unix)'.dependencies]
-psx-shm = { path = "../psx-shm/" }
-
-[target.'cfg(windows)'.dependencies]
-winmmf = "0.3"
+psx-shm = { path = "../psx-shm/", optional = true }
+memmap2 = { version = "*", optional = true }
 
 [features]
+default = ["image-crate"]
 crossterm-tokio = ["dep:crossterm", "dep:futures-core", "dep:tokio"]
+image-crate = ["dep:image", "dep:psx-shm", "dep:memmap2"]
 
 [dev-dependencies]
 tokio = { version = "1", default-features = false, features = ["time", "macros", "rt-multi-thread"] }
-crossterm = { version = "0.29", default-features = false, features = ["event-stream"] }
+crossterm = { version = "0.29", default-features = false, features = ["event-stream", "bracketed-paste"] }
 futures-core = "0.3"
 nix = { version = "0.30", features = ["fs"] }
 image = { version = "0.25", features = ["png"] }

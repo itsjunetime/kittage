@@ -1,6 +1,6 @@
 //! The [`Action`] type
 
-use std::io::Write;
+use std::{io::Write, num::NonZeroU32};
 
 use crate::{
 	AsyncInputReader, Image, ImageId, InputReader, NumberOrId, PlacementId, Verbosity,
@@ -11,6 +11,7 @@ use crate::{
 /// The different actions one can take to interact with a terminal which supports the kitty image
 /// protocol. This is the main interaction point with the terminal - one should construct an
 /// [`Action`] and [`Action::send`] it
+#[derive(Debug, PartialEq)]
 pub enum Action<'image, 'data> {
 	/// This simply sends the image data to the terminal, but does not display it. It also
 	/// transfers ownership of the image data to the terminal - for example, if a temp file is used
@@ -83,79 +84,81 @@ pub enum Action<'image, 'data> {
 	ComposeAnimationFrames
 }
 
-impl Action<'_, '_> {
+impl<'image, 'data> Action<'image, 'data> {
 	/// Write the transmit code for this [`Action`] to `writer` - this is the first part of
 	/// [`Self::execute`] and only does a part of what is necessary to fully interact with a
 	/// terminal. The full details can be found at [`Self::execute`].
 	pub fn write_transmit_to<W: Write>(
 		self,
-		mut writer: W,
+		writer: W,
 		verbosity: Verbosity
-	) -> std::io::Result<W> {
-		write!(writer, "a=")?;
+	) -> Result<W, (Self, std::io::Error)> {
 
-		let (mut writer, image_to_unlink) = match self {
-			Self::Transmit(image) => {
-				write!(writer, "t,")?;
-				(
-					image.write_transmit_to(writer, None, verbosity)?,
-					Some(image)
-				)
-			}
-			Self::TransmitAndDisplay {
-				image,
-				config,
-				placement_id
-			} => {
-				write!(writer, "T,")?;
-				writer = config.write_to(writer)?;
-				(
-					image.write_transmit_to(writer, placement_id, verbosity)?,
-					Some(image)
-				)
-			}
-			Self::Query(image) => {
-				write!(writer, "q,")?;
-				(image.write_transmit_to(writer, None, verbosity)?, None)
-			}
-			Self::Display {
-				image_id,
-				placement_id,
-				config
-			} => {
-				write!(writer, "p,i={image_id},p={placement_id},")?;
-				(config.write_to(writer)?, None)
-			}
-			Self::Delete(del) => {
-				write!(writer, "d")?;
-				(del.write_to(writer)?, None)
-			}
-			_ => todo!()
-		};
+		fn inner_for_stdio<'image, 'data, W: Write>(
+			img: &Action<'image, 'data>,
+			mut writer: W,
+			verbosity: Verbosity
+		) -> Result<W, std::io::Error> {
+			write!(writer, "\x1b_Ga=")?;
 
-		writer.flush()?;
+			let mut writer = match img {
+				Action::Transmit(image) => {
+					write!(writer, "t,")?;
+					image.write_transmit_to(writer, None, verbosity)?
+				}
+				Action::TransmitAndDisplay {
+					image,
+					config,
+					placement_id
+				} => {
+					write!(writer, "T,")?;
+					writer = config.write_to(writer)?;
+					image.write_transmit_to(writer, *placement_id, verbosity)?
+				}
+				Action::Query(image) => {
+					write!(writer, "q,")?;
+					image.write_transmit_to(writer, None, verbosity)?
+				}
+				Action::Display {
+					image_id,
+					placement_id,
+					config
+				} => {
+					write!(writer, "p,i={image_id},p={placement_id}")?;
+					writer = config.write_to(writer)?;
+					write!(writer, "\x1b\\")?;
+					writer
+				}
+				Action::Delete(del) => {
+					write!(writer, "d")?;
+					del.write_to(writer)?
+				}
+				_ => todo!()
+			};
 
-		if let Some(img) = image_to_unlink {
-			img.unlink_if_shm();
+			writer.flush()?;
+
+			Ok(writer)
 		}
 
-		Ok(writer)
+		inner_for_stdio(&self, writer, verbosity).map_err(|e| (self, e))
 	}
 
-	fn extract_num_or_id_and_placement(&self) -> (NumberOrId, Option<PlacementId>) {
+	fn extract_num_or_id_and_placement(&self) -> Option<(NumberOrId, Option<PlacementId>)> {
 		match self {
-			Self::Transmit(img) => (img.num_or_id, None),
+			Self::Transmit(img) => Some((img.num_or_id, None)),
 			Self::TransmitAndDisplay {
 				image,
 				placement_id,
 				..
-			} => (image.num_or_id, *placement_id),
-			Self::Query(img) => (img.num_or_id, None),
+			} => Some((image.num_or_id, *placement_id)),
+			Self::Query(img) => Some((img.num_or_id, None)),
 			Self::Display {
 				image_id,
 				placement_id,
 				..
-			} => (NumberOrId::Id(*image_id), Some(*placement_id)),
+			} => Some((NumberOrId::Id(*image_id), Some(*placement_id))),
+			Self::Delete(_) => None,
 			_ => todo!()
 		}
 	}
@@ -180,12 +183,18 @@ impl Action<'_, '_> {
 		self,
 		writer: W,
 		reader: I
-	) -> Result<(W, ImageId), TransmitError<I::Error>> {
-		let (id_or_num, placement_id) = self.extract_num_or_id_and_placement();
+	) -> Result<(W, ImageId), TransmitError<'image, 'data, I::Error>> {
+		let id_and_p = self.extract_num_or_id_and_placement();
 
-		let writer = self.write_transmit_to(writer, Verbosity::All)?;
+		let writer = self
+			.write_transmit_to(writer, Verbosity::All)
+			.map_err(|(i, e)| TransmitError::Writing(i, e))?;
 
-		let img_id = read_parse_response(reader, id_or_num, placement_id)?;
+		let img_id = if let Some((id_or_num, placement_id)) = id_and_p {
+			read_parse_response(reader, id_or_num, placement_id)?
+		} else {
+			NonZeroU32::new(1).unwrap()
+		};
 		Ok((writer, img_id))
 	}
 
@@ -194,12 +203,18 @@ impl Action<'_, '_> {
 		self,
 		writer: W,
 		reader: I
-	) -> Result<(W, ImageId), TransmitError<I::Error>> {
-		let (id_or_num, placement_id) = self.extract_num_or_id_and_placement();
+	) -> Result<(W, ImageId), TransmitError<'image, 'data, I::Error>> {
+		let id_and_p = self.extract_num_or_id_and_placement();
 
-		let writer = self.write_transmit_to(writer, Verbosity::All)?;
+		let writer = self
+			.write_transmit_to(writer, Verbosity::All)
+			.map_err(|(i, e)| TransmitError::Writing(i, e))?;
 
-		let img_id = read_parse_response_async(reader, id_or_num, placement_id).await?;
+		let img_id = if let Some((id_or_num, placement_id)) = id_and_p {
+			read_parse_response_async(reader, id_or_num, placement_id).await?
+		} else {
+			NonZeroU32::new(1).unwrap()
+		};
 		Ok((writer, img_id))
 	}
 }

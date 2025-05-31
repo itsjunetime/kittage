@@ -17,5 +17,5 @@ echo -en "$input"
 stty raw -echo min 0 time 5
 read -r response
 
-echo "$response" > "$fifo"
+echo "$response" | cut -d "$(echo -en '\e')" -f2 > "$fifo"
 rm "$fifo"

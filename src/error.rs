@@ -80,10 +80,6 @@ pub enum ParseError {
 	/// The value contained inside is the key of this unexpected option.
 	#[error("Unknown terminal response key '{0}'")]
 	UnknownResponseKey(String),
-	/// The response contained no final `\e`/`\x1b`/unicode escape code to indicate the end of the
-	/// response
-	#[error("The terminal's response contained no final '\\x1b'")]
-	NoFinalEsc,
 	/// The terminal reported an error in its response, but it wasn't formatted like
 	/// `<code>:<reason>` (where code is something like `EINVAL`), so we don't know how to handle
 	/// it.
@@ -153,10 +149,10 @@ impl<'a> TryFrom<(&'a str, &str)> for TerminalError {
 /// An error that can arise when transmitting an image to the terminal. This sort of error can also
 /// occur when just sending an image to query about it.
 #[derive(thiserror::Error, Debug)]
-pub enum TransmitError<InputError: Error> {
+pub enum TransmitError<'image, 'data, InputError: Error> {
 	/// The writer returned an error when we tried to write to it
-	#[error("Couldn't write to writer: {0}")]
-	Writing(#[from] std::io::Error),
+	#[error("Couldn't write to writer: {1}")]
+	Writing(crate::action::Action<'image, 'data>, std::io::Error),
 	/// An error occurred when we tried to read a response from the terminal after transmitting the
 	/// image
 	#[error("Couldn't read input after transmitting: {0}")]
@@ -171,17 +167,18 @@ pub enum TransmitError<InputError: Error> {
 	Terminal(TerminalError)
 }
 
-impl<E: PartialEq + Error> PartialEq for TransmitError<E> {
+impl<E: PartialEq + Error> PartialEq for TransmitError<'_, '_, E> {
 	fn eq(&self, other: &Self) -> bool {
 		match (self, other) {
-			(Self::Writing(e1), Self::Writing(e2)) => e1.to_string() == e2.to_string(),
+			(Self::Writing(a1, e1), Self::Writing(a2, e2)) =>
+				e1.to_string() == e2.to_string() && a1 == a2,
 			(Self::ReadingInput(e1), Self::ReadingInput(e2)) => e1 == e2,
 			(Self::ParsingResponse(e1), Self::ParsingResponse(e2)) => e1 == e2,
 			(Self::Terminal(e1), Self::Terminal(e2)) => e1 == e2,
 			// We are adding this exhaustive match here for the first half of the wildcard to
 			// ensure this fn is updated if we add more variants
 			(
-				Self::Writing(_)
+				Self::Writing(_, _)
 				| Self::ReadingInput(_)
 				| Self::ParsingResponse(_)
 				| Self::Terminal(_),

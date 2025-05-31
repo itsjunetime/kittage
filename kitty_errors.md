@@ -6,3 +6,4 @@
 - Does 'delete all intersecting with cursor' include those with a non-zero z-index?
 - Are implementing terminals expected to be able to read any common image filetype or just png/rgb/rgba
 - I think compressed png data just doesn't work?
+- Is the terminal supposed to `shm_unlink` AND `munmap` or just `shm_unlink`?

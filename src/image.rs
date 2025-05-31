@@ -2,15 +2,18 @@
 
 use std::{borrow::Cow, io::Write, num::NonZeroU32, str::Split, time::Duration};
 
+use image::DynamicImage;
+
 use crate::{
-	AnyValueOrSpecific, AsyncInputReader, Encodable, IMAGE_NUMBER_KEY, IdentifierType, ImageId,
-	InputReader, NumberOrId, PLACEMENT_ID_KEY, PixelFormat, PlacementId, TRANSFER_ID_KEY,
-	VERBOSITY_LEVEL_KEY, Verbosity, WriteUint,
+	AnyValueOrSpecific, AsyncInputReader, Encodable, IMAGE_NUMBER_KEY, IdentifierType,
+	ImageDimensions, ImageId, InputReader, NumberOrId, PLACEMENT_ID_KEY, PixelFormat, PlacementId,
+	TRANSFER_ID_KEY, VERBOSITY_LEVEL_KEY, Verbosity, WriteUint,
 	error::{ParseError, TerminalError, TransmitError},
-	medium::Medium
+	medium::{ChunkSize, Medium}
 };
 
 /// The data necessary to transmit or query or display (etc) an image on/to a receiving terminal
+#[derive(Debug, PartialEq)]
 pub struct Image<'data> {
 	/// The number or ID that should be sent along with the transmission - see the [`NumberOrId`]
 	/// documentation for what that means
@@ -30,7 +33,6 @@ impl Image<'_> {
 		placement_id: Option<NonZeroU32>,
 		verbosity: Verbosity
 	) -> std::io::Result<W> {
-		write!(writer, "\x1b_G")?;
 		match self.num_or_id {
 			NumberOrId::Id(id) => write!(writer, "{TRANSFER_ID_KEY}={id}"),
 			NumberOrId::Number(num) => write!(writer, "{IMAGE_NUMBER_KEY}={num}")
@@ -50,16 +52,83 @@ impl Image<'_> {
 		writer.flush()?;
 		Ok(writer)
 	}
+}
 
-	pub(crate) fn unlink_if_shm(mut self) {
-		// If we sent them a shm and they said OK, then they took over it and unlinked it. We want
-		// to make sure it's not double-unlinked so we just forget about it here.
-		if let Medium::SharedMemObject(_) = self.medium {
-			let old = std::mem::replace(&mut self.medium, Medium::Direct {
-				data: Cow::from(&[]),
-				chunk_size: None
-			});
-			std::mem::forget(old);
+#[cfg(feature = "image-crate")]
+impl From<::image::DynamicImage> for Image<'static> {
+	fn from(value: ::image::DynamicImage) -> Self {
+		let (format, data) = Image::fmt_and_data_from(value);
+
+		Self {
+			num_or_id: NumberOrId::Number(NonZeroU32::new(1).unwrap()),
+			format,
+			medium: Medium::Direct {
+				chunk_size: Some(ChunkSize::default()),
+				data: data.into()
+			}
+		}
+	}
+}
+
+#[cfg(feature = "image-crate")]
+#[derive(thiserror::Error, Debug)]
+pub enum FromShmErr {
+	#[error("Couldn't open shm: {0}")]
+	ShmOpen(std::io::Error),
+	#[error("Couldn't set shm's size: {0}")]
+	SetSize(std::io::Error),
+	#[error("Couldn't mmap shm: {0}")]
+	ShmMap(std::io::Error)
+}
+
+#[cfg(feature = "image-crate")]
+impl<'data> Image<'data> {
+	#[cfg(unix)]
+	pub fn shm_from(
+		image: ::image::DynamicImage,
+		name: Cow<'data, str>
+	) -> Result<(Self, memmap2::MmapMut), FromShmErr> {
+		use psx_shm::{BorrowedMap, OpenMode, OpenOptions};
+
+		let (format, data) = Image::fmt_and_data_from(image);
+
+		let oflags = OpenOptions::CREATE | OpenOptions::READWRITE;
+		let mode = OpenMode::R_USR | OpenMode::W_USR;
+		let mut shm = psx_shm::Shm::open(&name, oflags, mode).map_err(FromShmErr::ShmOpen)?;
+
+		shm.set_size(data.len()).map_err(FromShmErr::SetSize)?;
+
+		let mut map = unsafe { shm.map(0) }.map_err(FromShmErr::ShmMap)?;
+
+		map.map().copy_from_slice(&data);
+
+		// TODO: I'm cheating here
+		let map = unsafe { std::mem::transmute::<BorrowedMap<'_>, memmap2::MmapMut>(map) };
+		std::mem::forget(shm);
+
+		Ok((
+			Self {
+				num_or_id: NumberOrId::Number(NonZeroU32::new(1).unwrap()),
+				format,
+				medium: Medium::SharedMemObject { name }
+			},
+			map
+		))
+	}
+
+	pub fn fmt_and_data_from(image: ::image::DynamicImage) -> (PixelFormat, Vec<u8>) {
+		use DynamicImage::*;
+
+		let (width, height) = (image.width(), image.height());
+		let dim = ImageDimensions { width, height };
+		match image {
+			ImageLuma8(_) | ImageRgb8(_) | ImageLuma16(_) | ImageRgb16(_) | ImageRgb32F(_) =>
+				(PixelFormat::Rgb24(dim, None), image.into_rgb8().into_vec()),
+			ImageLumaA8(_) | ImageRgba8(_) | ImageLumaA16(_) | ImageRgba16(_) | ImageRgba32F(_)
+			| _ => (
+				PixelFormat::Rgba32(dim, None),
+				image.into_rgba8().into_vec()
+			)
 		}
 	}
 }
@@ -68,11 +137,11 @@ pub(crate) async fn read_parse_response_async<I: AsyncInputReader>(
 	mut reader: I,
 	image: NumberOrId,
 	placement_id: Option<PlacementId>
-) -> Result<ImageId, TransmitError<I::Error>> {
+) -> Result<ImageId, TransmitError<'static, 'static, I::Error>> {
 	let mut output = String::with_capacity("\x1b_Gi=;OK\x1b\\".len() + 10);
 	// Try to get the terminal's repsonse
 	if let Err(e) = reader
-		.read_into_buf_until_char_with_timeout(&mut output, '\\', Duration::from_millis(100))
+		.read_esc_delimited_str_with_timeout(&mut output, Duration::from_millis(1000))
 		.await
 	{
 		return Err(TransmitError::ReadingInput(e));
@@ -88,10 +157,10 @@ pub(crate) fn read_parse_response<I: InputReader>(
 	mut reader: I,
 	image: NumberOrId,
 	placement_id: Option<PlacementId>
-) -> Result<ImageId, TransmitError<I::Error>> {
+) -> Result<ImageId, TransmitError<'static, 'static, I::Error>> {
 	let mut output = String::with_capacity("\x1b_Gi=;OK\x1b\\".len() + 10);
 	// Try to get the terminal's repsonse
-	if let Err(e) = reader.read_into_buf_until_char(&mut output, '\\') {
+	if let Err(e) = reader.read_esc_delimited_str(&mut output) {
 		return Err(TransmitError::ReadingInput(e));
 	}
 
@@ -106,11 +175,11 @@ pub(crate) fn parse_response(
 	image: NumberOrId,
 	placement_id: Option<ImageId>
 ) -> Result<Result<ImageId, TerminalError>, ParseError> {
-	if !output.starts_with("\x1b_G") {
+	if !output.starts_with("_G") {
 		return Err(ParseError::NoStartSequence(output));
 	}
 
-	let input = output.trim_start_matches("\x1b_G");
+	let input = output.trim_start_matches("_G");
 	let Some(semicolon_pos) = input.find(';') else {
 		return Err(ParseError::NoFinalSemicolon);
 	};
@@ -231,13 +300,7 @@ pub(crate) fn parse_response(
 	// an empty string.
 	let response = &input[semicolon_pos + 1..];
 
-	let Some(esc_pos) = response.find('\x1b') else {
-		return Err(ParseError::NoFinalEsc);
-	};
-
-	let response = &response[..esc_pos];
-
-	if response == "OK" {
+	if response == "OK" || response == "OK\n" {
 		return Ok(Ok(found_image_id));
 	}
 
@@ -271,7 +334,7 @@ mod tests {
 		// just image id
 		assert_eq!(
 			parse_response(
-				"\x1b_Gi=31;OK\x1b".into(),
+				"_Gi=31;OK".into(),
 				NumberOrId::Id(NonZeroU32::new(31).unwrap()),
 				None
 			),
@@ -281,7 +344,7 @@ mod tests {
 		// add image number
 		assert_eq!(
 			parse_response(
-				"\x1b_Gi=1,I=12;OK\x1b".into(),
+				"_Gi=1,I=12;OK".into(),
 				NumberOrId::Number(NonZeroU32::new(12).unwrap()),
 				None
 			),
@@ -291,7 +354,7 @@ mod tests {
 		// add placement id
 		assert_eq!(
 			parse_response(
-				"\x1b_Gi=1,p=2,I=12;OK\x1b".into(),
+				"_Gi=1,p=2,I=12;OK".into(),
 				NumberOrId::Number(NonZeroU32::new(12).unwrap()),
 				Some(NonZeroU32::new(2).unwrap())
 			),
@@ -301,7 +364,7 @@ mod tests {
 		// placement, but no image number
 		assert_eq!(
 			parse_response(
-				"\x1b_Gi=987,p=2;OK\x1b".into(),
+				"_Gi=987,p=2;OK".into(),
 				NumberOrId::Id(NonZeroU32::new(987).unwrap()),
 				Some(NonZeroU32::new(2).unwrap())
 			),
@@ -311,7 +374,7 @@ mod tests {
 		// different order
 		assert_eq!(
 			parse_response(
-				"\x1b_Gp=2,i=100,I=12;OK\x1b".into(),
+				"_Gp=2,i=100,I=12;OK".into(),
 				NumberOrId::Number(NonZeroU32::new(12).unwrap()),
 				Some(NonZeroU32::new(2).unwrap())
 			),
@@ -339,62 +402,50 @@ mod tests {
 		let id = NumberOrId::Id(nzu(1));
 		simple("", ParseError::NoStartSequence(String::new()));
 
-		simple(
-			"\x1bGi=1;OK\x1b",
-			ParseError::NoStartSequence("\x1bGi=1;OK\x1b".into())
-		);
+		simple("Gi=1;OK", ParseError::NoStartSequence("Gi=1;OK".into()));
 
-		simple("\x1b_Gi=1OK\x1b", ParseError::NoFinalSemicolon);
+		simple("_Gi=1OK", ParseError::NoFinalSemicolon);
 
-		simple("\x1b_Gi=1OK;\x1b", ParseError::DifferentIdInResponse {
+		simple("_Gi=1OK;", ParseError::DifferentIdInResponse {
 			ty: IdentifierType::ImageId,
 			found: "1OK".into(),
 			expected: AnyValueOrSpecific::Specific(nzu(1))
 		});
 
-		simple("\x1b_Gi=;OK\x1b", ParseError::DifferentIdInResponse {
+		simple("_Gi=;OK", ParseError::DifferentIdInResponse {
 			ty: IdentifierType::ImageId,
 			found: String::new(),
 			expected: AnyValueOrSpecific::Specific(nzu(1))
 		});
 
-		simple("\x1b_Gi=2;OK\x1b", ParseError::DifferentIdInResponse {
+		simple("_Gi=2;OK", ParseError::DifferentIdInResponse {
 			ty: IdentifierType::ImageId,
 			found: "2".into(),
 			expected: AnyValueOrSpecific::Specific(nzu(1))
 		});
 
-		simple(
-			"\x1b_Gi=1,p=4;OK\x1b",
-			ParseError::IdInResponseButNotInRequest {
-				ty: IdentifierType::PlacementId,
-				value: "4".into()
-			}
-		);
+		simple("_Gi=1,p=4;OK", ParseError::IdInResponseButNotInRequest {
+			ty: IdentifierType::PlacementId,
+			value: "4".into()
+		});
 
-		simple(
-			"\x1b_Gp=4;OK\x1b",
-			ParseError::IdInResponseButNotInRequest {
-				ty: IdentifierType::PlacementId,
-				value: "4".into()
-			}
-		);
+		simple("_Gp=4;OK", ParseError::IdInResponseButNotInRequest {
+			ty: IdentifierType::PlacementId,
+			value: "4".into()
+		});
 
-		simple(
-			"\x1b_Gi=1,I=0;OK\x1b",
-			ParseError::IdInResponseButNotInRequest {
-				ty: IdentifierType::ImageNumber,
-				value: "0".into()
-			}
-		);
+		simple("_Gi=1,I=0;OK", ParseError::IdInResponseButNotInRequest {
+			ty: IdentifierType::ImageNumber,
+			value: "0".into()
+		});
 
-		simple("\x1b_G;OK\x1b", ParseError::MissingId {
+		simple("_G;OK", ParseError::MissingId {
 			ty: IdentifierType::ImageId,
 			val: AnyValueOrSpecific::Specific(nzu(1))
 		});
 
 		assert_eq!(
-			parse_response("\x1b_GI=2;OK\x1b".into(), NumberOrId::Number(nzu(2)), None),
+			parse_response("_GI=2;OK".into(), NumberOrId::Number(nzu(2)), None),
 			Err(ParseError::MissingId {
 				ty: IdentifierType::ImageId,
 				val: AnyValueOrSpecific::Any
@@ -402,7 +453,7 @@ mod tests {
 		);
 
 		assert_eq!(
-			parse_response("\x1b_Gi=2;OK\x1b".into(), NumberOrId::Number(nzu(2)), None),
+			parse_response("_Gi=2;OK".into(), NumberOrId::Number(nzu(2)), None),
 			Err(ParseError::MissingId {
 				ty: IdentifierType::ImageNumber,
 				val: AnyValueOrSpecific::Specific(nzu(2))
@@ -410,7 +461,7 @@ mod tests {
 		);
 
 		assert_eq!(
-			parse_response("\x1b_Gi=1;OK\x1b".into(), id, Some(nzu(3))),
+			parse_response("_Gi=1;OK".into(), id, Some(nzu(3))),
 			Err(ParseError::MissingId {
 				ty: IdentifierType::PlacementId,
 				val: AnyValueOrSpecific::Specific(nzu(3))
@@ -419,7 +470,7 @@ mod tests {
 
 		assert_eq!(
 			parse_response(
-				"\x1b_Gi=1,I=2;OK\x1b".into(),
+				"_Gi=1,I=2;OK".into(),
 				NumberOrId::Number(nzu(2)),
 				Some(nzu(3))
 			),
@@ -431,7 +482,7 @@ mod tests {
 
 		assert_eq!(
 			parse_response(
-				"\x1b_Gi=1,p=3;OK\x1b".into(),
+				"_Gi=1,p=3;OK".into(),
 				NumberOrId::Number(nzu(2)),
 				Some(nzu(3))
 			),
@@ -441,33 +492,21 @@ mod tests {
 			})
 		);
 
+		simple("_Gt=0;OK", ParseError::UnknownResponseKey("t".into()));
 		simple(
-			"\x1b_Gt=0;OK\x1b",
-			ParseError::UnknownResponseKey("t".into())
-		);
-		simple(
-			"\x1b_Gi=1,meow=0;OK\x1b",
+			"_Gi=1,meow=0;OK",
 			ParseError::UnknownResponseKey("meow".into())
 		);
 
-		simple("\x1b_Gi=1;OK", ParseError::NoFinalEsc);
-		simple("\x1b_Gi=1;", ParseError::NoFinalEsc);
-
 		simple(
-			"\x1b_Gi=1;You did something wrong\x1b",
+			"_Gi=1;You did something wrong",
 			ParseError::MalformedError("You did something wrong".into())
 		);
-		simple(
-			"\x1b_Gi=1;EINVAL\x1b",
-			ParseError::MalformedError("EINVAL".into())
-		);
+		simple("_Gi=1;EINVAL", ParseError::MalformedError("EINVAL".into()));
 
-		simple(
-			"\x1b_Gi=1;EIDIOT:little idiot\x1b",
-			ParseError::UnknownErrorCode {
-				code: "EIDIOT".into(),
-				reason: "little idiot".into()
-			}
-		);
+		simple("_Gi=1;EIDIOT:little idiot", ParseError::UnknownErrorCode {
+			code: "EIDIOT".into(),
+			reason: "little idiot".into()
+		});
 	}
 }

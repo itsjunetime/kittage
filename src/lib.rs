@@ -55,7 +55,7 @@ pub(crate) trait WriteUint: Write + Sized {
 impl<T: Write + Sized> WriteUint for T {}
 
 /// The format of the image data that is being sent
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum PixelFormat {
 	/// 3 bytes per pixel, with color in the sRGB color space. If you are using the
 	/// [`image`](https://crates.io/crates/image) crate, you can easily create conformant data with
@@ -121,12 +121,12 @@ impl<W: Write> Encodable<W, 'f'> for PixelFormat {
 /// The dimensions of the image to display. This specifies a specific crop of the image to display,
 /// and must not specify a size larger than the source image. If it is smaller, only a cropped
 /// subset of the original image will be sent/displayed
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct ImageDimensions {
 	/// The number of pixels wide, divided by 4 (for some reason)
-	width: u32,
+	pub width: u32,
 	/// The number of pixels high, divided by 4 (for some reason)
-	height: u32
+	pub height: u32
 }
 
 pub(crate) const SOURCE_WIDTH_KEY: char = 's';
@@ -184,7 +184,7 @@ impl_encodable_for_int!(
 );
 
 /// Which method of compression was used to compress the data being sent to the terminal
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum Compression {
 	/// [RFC 1950](https://datatracker.ietf.org/doc/html/rfc1950.html) zlib based deflate
 	/// compression. You can encode data to this format using the
@@ -213,13 +213,9 @@ impl<W: Write> Encodable<W, 'o'> for Option<Compression> {
 pub trait AsyncInputReader {
 	/// The error type that can occur while trying to read
 	type Error: Error;
-	/// Read from stdin into the provided buffer until you encounter the provided character or the
-	/// provided timeout is hit. Timeout measuring does not need to be exact - it is simply used to
-	/// ensure this method doesn't block forever.
-	fn read_into_buf_until_char_with_timeout(
+	fn read_esc_delimited_str_with_timeout(
 		&mut self,
 		buf: &mut String,
-		end: char,
 		timeout: Duration
 	) -> impl Future<Output = Result<(), Self::Error>>;
 }
@@ -228,14 +224,12 @@ pub trait AsyncInputReader {
 pub trait InputReader {
 	/// The error type that can occur while trying to read
 	type Error: Error;
-	/// Read from stdin into the provided buffer until you encounter the provided character. Since
-	/// this is not async, it can block forever waiting for that character to come through
-	fn read_into_buf_until_char(&mut self, buf: &mut String, end: char) -> Result<(), Self::Error>;
+	fn read_esc_delimited_str(&mut self, buf: &mut String) -> Result<(), Self::Error>;
 }
 
 /// Used to either specify an Image ID or Image Number - see the details on [`IdentifierType`] for
 /// explanations of how Image IDs vs Numbers are used.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NumberOrId {
 	/// An Image Number ([`IdentifierType::ImageNumber`])
 	Number(NonZeroU32),
@@ -327,7 +321,7 @@ pub enum Verbosity {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod lib_tests {
 	use std::{
 		convert::Infallible,
 		hash::{DefaultHasher, Hasher},
@@ -344,6 +338,8 @@ mod tests {
 	use super::*;
 	use crate::{
 		Compression,
+		action::Action,
+		display::DisplayConfig,
 		error::{TerminalError, TransmitError},
 		image::{Image, parse_response},
 		medium::{ChunkSize, Medium}
@@ -390,28 +386,34 @@ mod tests {
 		s
 	}
 
-	fn spawn_kitty_with_image(img: Image) -> Result<(), TransmitError<Infallible>> {
+	fn spawn_kitty_with_image<'data>(
+		image: Image<'data>
+	) -> Result<(), TransmitError<'data, 'static, Infallible>> {
 		let mut output = Vec::new();
-		img.write_transmit_to(&mut output, None, Verbosity::All)
-			.unwrap();
+		let num_or_id = image.num_or_id;
+		Action::TransmitAndDisplay {
+			image,
+			config: DisplayConfig::default(),
+			placement_id: None
+		}
+		.write_transmit_to(&mut output, Verbosity::All)
+		.unwrap();
 
 		println!(
-			"here's output: {}",
-			str::from_utf8(&output).unwrap().replace('\x1b', "\\e")
+			"here's output: {:?}",
+			str::from_utf8(&output).unwrap()
 		);
 
 		let response = spawn_kitty_get_io(&output);
 
-		let num_or_id = img.num_or_id;
 		parse_response(response, num_or_id, None).map_or_else(
 			|e| Err(TransmitError::ParsingResponse(e)),
 			|res| res.map_err(TransmitError::Terminal)
 		)?;
-		img.unlink_if_shm();
 		Ok(())
 	}
 
-	fn png_path() -> Box<Path> {
+	pub fn png_path() -> Box<Path> {
 		let mut manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 		manifest_dir.push("kitty.png");
 		manifest_dir.into()
@@ -645,22 +647,27 @@ mod tests {
 	#[cfg(unix)]
 	async fn png_unix_shm_succeeds() {
 		use psx_shm::{OpenMode, OpenOptions};
-		use crate::medium::SharedMemObject;
 
 		let data = std::fs::read(png_path()).unwrap();
-		let name = format!("kitty_img_test_{}", std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());
+		let name = format!(
+			"__kitty_img_test_{}",
+			std::time::SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.unwrap()
+				.as_nanos()
+		);
 		let open_opts = OpenOptions::CREATE | OpenOptions::READWRITE;
 		let open_mode = OpenMode::R_USR | OpenMode::W_USR;
-		let shm = psx_shm::Shm::open(&name, open_opts, open_mode).unwrap();
+		let mut shm = psx_shm::Shm::open(&name, open_opts, open_mode).unwrap();
 		shm.set_size(data.len()).unwrap();
 
-		let mut mapped = shm.map(0).unwrap();
-		mapped.copy_from_slice(&data);
+		let mut mapped = unsafe { shm.map(0) }.unwrap();
+		mapped.map().copy_from_slice(&data);
 
 		let img = Image {
 			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
 			format: PixelFormat::Png(None),
-			medium: Medium::SharedMemObject(SharedMemObject::new(shm))
+			medium: Medium::SharedMemObject { name: name.into() }
 		};
 
 		spawn_kitty_with_image(img).unwrap();
