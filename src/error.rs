@@ -152,7 +152,7 @@ impl<'a> TryFrom<(&'a str, &str)> for TerminalError {
 pub enum TransmitError<'image, 'data, InputError: Error> {
 	/// The writer returned an error when we tried to write to it
 	#[error("Couldn't write to writer: {1}")]
-	Writing(crate::action::Action<'image, 'data>, std::io::Error),
+	Writing(Box<crate::action::Action<'image, 'data>>, std::io::Error),
 	/// An error occurred when we tried to read a response from the terminal after transmitting the
 	/// image
 	#[error("Couldn't read input after transmitting: {0}")]

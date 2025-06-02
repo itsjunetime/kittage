@@ -92,8 +92,7 @@ impl<'image, 'data> Action<'image, 'data> {
 		self,
 		writer: W,
 		verbosity: Verbosity
-	) -> Result<W, (Self, std::io::Error)> {
-
+	) -> Result<W, (Box<Self>, std::io::Error)> {
 		fn inner_for_stdio<'image, 'data, W: Write>(
 			img: &Action<'image, 'data>,
 			mut writer: W,
@@ -141,7 +140,7 @@ impl<'image, 'data> Action<'image, 'data> {
 			Ok(writer)
 		}
 
-		inner_for_stdio(&self, writer, verbosity).map_err(|e| (self, e))
+		inner_for_stdio(&self, writer, verbosity).map_err(|e| (Box::new(self), e))
 	}
 
 	fn extract_num_or_id_and_placement(&self) -> Option<(NumberOrId, Option<PlacementId>)> {

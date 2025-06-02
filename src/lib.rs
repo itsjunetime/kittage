@@ -399,10 +399,7 @@ pub(crate) mod lib_tests {
 		.write_transmit_to(&mut output, Verbosity::All)
 		.unwrap();
 
-		println!(
-			"here's output: {:?}",
-			str::from_utf8(&output).unwrap()
-		);
+		println!("here's output: {:?}", str::from_utf8(&output).unwrap());
 
 		let response = spawn_kitty_get_io(&output);
 

@@ -23,6 +23,16 @@ pub enum InputErr {
 	IO(#[from] std::io::Error)
 }
 
+impl PartialEq for InputErr {
+	fn eq(&self, other: &Self) -> bool {
+		match (self, other) {
+			(Self::Timeout(e1), Self::Timeout(e2)) => e1 == e2,
+			(Self::IO(e1), Self::IO(e2)) => e1.kind() == e2.kind(),
+			(Self::Timeout(_) | Self::IO(_), _) => false
+		}
+	}
+}
+
 impl AsyncInputReader for &mut EventStream {
 	type Error = InputErr;
 	async fn read_esc_delimited_str_with_timeout(
@@ -103,27 +113,27 @@ mod tests {
 
 	use super::*;
 	use crate::{
-		NumberOrId,
+		NumberOrId, PixelFormat,
 		action::Action,
 		delete::{ClearOrDelete, DeleteConfig, WhichToDelete},
 		display::DisplayConfig,
+		error::{TerminalError, TransmitError},
 		image::Image,
-		medium::Medium,
-		lib_tests::png_path
+		lib_tests::png_path,
+		medium::Medium
 	};
 
 	const REAL_TEST_VAR: &str = "KITTYIMG_REAL_TEST";
 
-	fn spawn_kitty_for(test: &'static str) {
+	fn spawn_kitty_for(test: &'static str, expect_code: i32) {
 		let test_binary = PathBuf::from(std::env::args().next().unwrap())
 			.canonicalize()
 			.unwrap();
 
 		println!("trying to run 'env {REAL_TEST_VAR}=1 {test_binary:?} --nocapture {test}'");
 
-		let (mut reader, writer) = pipe().unwrap();
-		let status = Command::new("kitty")
-			.args([
+		let mut cmd = Command::new("kitty");
+		cmd.args([
 				"@",
 				"launch",
 				"--wait-for-child-to-exit",
@@ -134,47 +144,61 @@ mod tests {
 				"--env"
 			])
 			.arg(format!("{REAL_TEST_VAR}=1"))
-			.arg(test_binary)
-			.arg("--nocapture")
-			.arg(test)
+			.arg("sh")
+			.arg("-c")
+			.arg(format!("{test_binary:?} --nocapture {test}; e=$?; if [ $e -ne {expect_code} ]; then echo code $e; read a; fi; exit $e"))
 			.env(REAL_TEST_VAR, "1")
-			.stdout(writer)
-			.stderr(Stdio::null())
-			.stdin(Stdio::null())
-			.spawn()
-			.unwrap()
-			.wait()
-			.unwrap();
+			.stdout(Stdio::piped())
+			.stderr(Stdio::piped())
+			.stdin(Stdio::piped());
 
-		assert!(status.success());
+		println!("full cmd: {cmd:?}");
 
-		let mut test_status = String::new();
-		assert_ne!(reader.read_to_string(&mut test_status).unwrap(), 0);
-		let test_status = test_status.trim_end();
+		let child = cmd.spawn().unwrap();
 
-		assert!(test_status.starts_with('0'), "got status '{test_status}'");
+		println!("we spawned the child...");
+
+		let output = child.wait_with_output().unwrap();
+
+		println!("got the output! {output:#?}");
+
+		assert_eq!(output.status.code(), Some(0));
+		assert_eq!(
+			str::from_utf8(output.stdout.trim_ascii_end()),
+			Ok(expect_code.to_string().as_str())
+		);
+	}
+
+	#[test]
+	fn spawning_kitty_receives_internal_exit_code() {
+		if std::env::var(REAL_TEST_VAR).is_err() {
+			spawn_kitty_for("spawning_kitty_receives_internal_exit_code", 47);
+			return;
+		}
+
+		std::process::exit(47);
 	}
 
 	macro_rules! divert_if_not_spawned_test {
 		($test:expr) => {
 			if std::env::var(REAL_TEST_VAR).is_err() {
-				spawn_kitty_for($test);
+				spawn_kitty_for($test, 0);
 				return;
 			}
+
+			enable_raw_mode().unwrap();
+
+			let old_hook = take_hook();
+			set_hook(Box::new(move |panic_info| {
+				drop(disable_raw_mode());
+				old_hook(panic_info);
+			}));
 		};
 	}
 
 	#[tokio::test]
 	async fn transmit_display_then_display() {
 		divert_if_not_spawned_test!("transmit_display_then_display");
-
-		enable_raw_mode().unwrap();
-
-		let old_hook = take_hook();
-		set_hook(Box::new(move |panic_info| {
-			drop(disable_raw_mode());
-			old_hook(panic_info);
-		}));
 
 		let img_path = png_path();
 
@@ -247,6 +271,36 @@ mod tests {
 			println!("tried to print {:?}", writer.buf);
 			panic!("{e}");
 		}
+
+		disable_raw_mode().unwrap();
+	}
+
+	#[tokio::test]
+	async fn fails_inside_kitty() {
+		divert_if_not_spawned_test!("fails_inside_kitty");
+
+		let mut ev_stream = EventStream::new();
+		let stdout = std::io::stdout().lock();
+
+		let err = Action::TransmitAndDisplay {
+			image: Image {
+				num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
+				format: PixelFormat::Png(None),
+				medium: Medium::File(PathBuf::from("__this_is_not_real.png").into())
+			},
+			config: DisplayConfig::default(),
+			placement_id: None
+		}
+		.execute_async(stdout, &mut ev_stream)
+		.await
+		.unwrap_err();
+
+		assert_eq!(
+			err,
+			TransmitError::Terminal(TerminalError::BadFile(
+				"Failed to open file for graphics transmission with error".into()
+			))
+		);
 
 		disable_raw_mode().unwrap();
 	}
