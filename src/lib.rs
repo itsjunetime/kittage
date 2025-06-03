@@ -213,6 +213,12 @@ impl<W: Write> Encodable<W, 'o'> for Option<Compression> {
 pub trait AsyncInputReader {
 	/// The error type that can occur while trying to read
 	type Error: Error;
+	/// Read a string from stdin into `buf`. The read-in string should contain all the bytes that
+	/// flowed through stdin between (and not including) the first-seen `\x1b` and next-seen
+	/// `\x1b`. All non-utf8 input should be discarded.
+	///
+	/// The attempt to read this input should also be kept to the given timeout - if this function
+	/// does not see two `\x1b`s by the time the timeout is hit, it must return an error.
 	fn read_esc_delimited_str_with_timeout(
 		&mut self,
 		buf: &mut String,
@@ -224,6 +230,8 @@ pub trait AsyncInputReader {
 pub trait InputReader {
 	/// The error type that can occur while trying to read
 	type Error: Error;
+	/// Does the same as [`AsyncInputReader::read_esc_delimited_str_with_timeout`], except with no
+	/// timeout - it is expected to block forever if it can't find `\x1b`s.
 	fn read_esc_delimited_str(&mut self, buf: &mut String) -> Result<(), Self::Error>;
 }
 

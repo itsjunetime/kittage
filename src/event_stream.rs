@@ -102,7 +102,7 @@ impl Unpin for Next<'_> where EventStream: Unpin {}
 #[cfg(test)]
 mod tests {
 	use std::{
-		io::{Read, StdoutLock, pipe},
+		io::StdoutLock,
 		num::NonZeroU32,
 		panic::{set_hook, take_hook},
 		path::PathBuf,

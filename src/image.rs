@@ -8,6 +8,7 @@ use crate::{
 	AnyValueOrSpecific, AsyncInputReader, Encodable, IMAGE_NUMBER_KEY, IdentifierType,
 	ImageDimensions, ImageId, InputReader, NumberOrId, PLACEMENT_ID_KEY, PixelFormat, PlacementId,
 	TRANSFER_ID_KEY, VERBOSITY_LEVEL_KEY, Verbosity, WriteUint,
+	display::DisplayConfig,
 	error::{ParseError, TerminalError, TransmitError},
 	medium::{ChunkSize, Medium}
 };
@@ -31,6 +32,7 @@ impl Image<'_> {
 		&self,
 		mut writer: W,
 		placement_id: Option<NonZeroU32>,
+		display_config: Option<&DisplayConfig>,
 		verbosity: Verbosity
 	) -> std::io::Result<W> {
 		match self.num_or_id {
@@ -43,6 +45,10 @@ impl Image<'_> {
 		}
 
 		writer = writer.write_uint::<VERBOSITY_LEVEL_KEY, _>(verbosity as u8)?;
+
+		if let Some(config) = display_config {
+			writer = config.write_to(writer)?;
+		}
 
 		// Write all format data, up to (and including) the ';'
 		writer = self.format.write_kv_encoded(writer)?;
@@ -70,19 +76,37 @@ impl From<::image::DynamicImage> for Image<'static> {
 	}
 }
 
+/// Errors that can occur when calling [`Image::shm_from`]
 #[cfg(feature = "image-crate")]
 #[derive(thiserror::Error, Debug)]
 pub enum FromShmErr {
+	/// The Shared Memory Object couldn't be opened
 	#[error("Couldn't open shm: {0}")]
 	ShmOpen(std::io::Error),
+	/// We couldn't set the size of the shm
 	#[error("Couldn't set shm's size: {0}")]
 	SetSize(std::io::Error),
+	/// We couldn't mmap the shm (which we need to do to write to it)
 	#[error("Couldn't mmap shm: {0}")]
 	ShmMap(std::io::Error)
 }
 
 #[cfg(feature = "image-crate")]
 impl<'data> Image<'data> {
+	/// Create an [`Image`] from the given [`image::DynamicImage`] and name. The given name will be
+	/// passed to [`shm_open`] and then given to kitty for it to take ownership of.
+	///
+	/// The image returned from this will contain a [`Medium::SharedMemObject`].
+	///
+	/// If you can use shared memory objects, this provides much better performance than just
+	/// calling `image.into()`.
+	///
+	/// The returned [`memmap2::MmapMut`] must be kept around until this is successfully sent to
+	/// the terminal, and then it must be dropped to avoid a memory leak (as dropping it will unmap
+	/// the memory that was sent to the terminal, which is fine as the terminal should've already
+	/// copied the memory into its own storage).
+	///
+	/// [`shm_open`]: https://www.man7.org/linux/man-pages/man3/shm_open.3.html
 	#[cfg(unix)]
 	pub fn shm_from(
 		image: ::image::DynamicImage,
@@ -102,7 +126,10 @@ impl<'data> Image<'data> {
 
 		map.map().copy_from_slice(&data);
 
-		// TODO: I'm cheating here
+		// TODO: I'm cheating here... it kinda fucks with rust's ownership model to require the
+		// client to 'own' the mmap while the terminal 'owns' the shm even though they both refer
+		// to the same bit of memory. I need to figure out how to model this better. Maybe with
+		// Yoke?
 		let map = unsafe { std::mem::transmute::<BorrowedMap<'_>, memmap2::MmapMut>(map) };
 		std::mem::forget(shm);
 
@@ -116,6 +143,8 @@ impl<'data> Image<'data> {
 		))
 	}
 
+	/// Pull the format and data (of that format) from a specific image. Used to convert a given
+	/// [`image::DynamicImage`] into an [`Image`]
 	pub fn fmt_and_data_from(image: ::image::DynamicImage) -> (PixelFormat, Vec<u8>) {
 		use DynamicImage::*;
 

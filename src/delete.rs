@@ -124,6 +124,7 @@ impl DeleteConfig {
 			WhichToDelete::PlacementsWithZIndex(z) => write!(w, "{},z={z}", e.maybe_upper('z'))?
 		}
 
+		write!(w, "\x1b\\")?;
 		Ok(w)
 	}
 }

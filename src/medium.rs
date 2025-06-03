@@ -58,12 +58,12 @@ pub enum Medium<'data> {
 	TempFile(Box<Path>),
 	/// A _shared memory object_, which on POSIX systems is a [POSIX shared memory
 	/// object](https://pubs.opengroup.org/onlinepubs/9699919799/functions/shm_open.html)
-	/// (represented here with a [`psx_shm::Shm`] and on Windows is a [Named shared memory
-	/// object](https://docs.microsoft.com/en-us/windows/win32/memory/creating-named-shared-memory)
-	/// (represented here with a [`winmmf::MemoryMappedFile`]). The terminal emulator must read the
-	/// data from the memory object and then unlink and close it on POSIX and just close it on
-	/// Windows.
-	SharedMemObject { name: Cow<'data, str> }
+	/// and on Windows is a [Named shared memory object]
+	/// (https://docs.microsoft.com/en-us/windows/win32/memory/creating-named-shared-memory).
+	SharedMemObject {
+		/// The name of the given object to be opened and passed to the terminal
+		name: Cow<'data, str>
+	}
 }
 
 pub(crate) fn write_b64<W: Write>(data: &[u8], writer: W) -> std::io::Result<W> {

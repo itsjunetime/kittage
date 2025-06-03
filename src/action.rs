@@ -103,7 +103,7 @@ impl<'image, 'data> Action<'image, 'data> {
 			let mut writer = match img {
 				Action::Transmit(image) => {
 					write!(writer, "t,")?;
-					image.write_transmit_to(writer, None, verbosity)?
+					image.write_transmit_to(writer, None, None, verbosity)?
 				}
 				Action::TransmitAndDisplay {
 					image,
@@ -111,12 +111,11 @@ impl<'image, 'data> Action<'image, 'data> {
 					placement_id
 				} => {
 					write!(writer, "T,")?;
-					writer = config.write_to(writer)?;
-					image.write_transmit_to(writer, *placement_id, verbosity)?
+					image.write_transmit_to(writer, *placement_id, Some(config), verbosity)?
 				}
 				Action::Query(image) => {
 					write!(writer, "q,")?;
-					image.write_transmit_to(writer, None, verbosity)?
+					image.write_transmit_to(writer, None, None, verbosity)?
 				}
 				Action::Display {
 					image_id,
