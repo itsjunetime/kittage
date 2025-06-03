@@ -793,6 +793,7 @@ dependencies = [
 [[package]]
 name = "psx-shm"
 version = "0.1.1"
+source = "git+https://github.com/itsjunetime/psx-shm.git#7befbe3b0bc2f95e34f14423abfc7c66b75eb742"
 dependencies = [
  "bitflags 2.9.0",
  "libc",
