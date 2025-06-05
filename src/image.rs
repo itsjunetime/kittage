@@ -1,16 +1,14 @@
 //! The [`Image`] struct and associated functions to control how it is transmitted to the terminal
 
-use std::{borrow::Cow, io::Write, num::NonZeroU32, str::Split, time::Duration};
-
-use image::DynamicImage;
+use std::{io::Write, num::NonZeroU32, str::Split, time::Duration};
 
 use crate::{
-	AnyValueOrSpecific, AsyncInputReader, Encodable, IMAGE_NUMBER_KEY, IdentifierType,
-	ImageDimensions, ImageId, InputReader, NumberOrId, PLACEMENT_ID_KEY, PixelFormat, PlacementId,
-	TRANSFER_ID_KEY, VERBOSITY_LEVEL_KEY, Verbosity, WriteUint,
+	AnyValueOrSpecific, AsyncInputReader, Encodable, IMAGE_NUMBER_KEY, IdentifierType, ImageId,
+	InputReader, NumberOrId, PLACEMENT_ID_KEY, PixelFormat, PlacementId, TRANSFER_ID_KEY,
+	VERBOSITY_LEVEL_KEY, Verbosity, WriteUint,
 	display::DisplayConfig,
 	error::{ParseError, TerminalError, TransmitError},
-	medium::{ChunkSize, Medium}
+	medium::Medium
 };
 
 /// The data necessary to transmit or query or display (etc) an image on/to a receiving terminal
@@ -69,26 +67,11 @@ impl From<::image::DynamicImage> for Image<'static> {
 			num_or_id: NumberOrId::Number(NonZeroU32::new(1).unwrap()),
 			format,
 			medium: Medium::Direct {
-				chunk_size: Some(ChunkSize::default()),
+				chunk_size: Some(crate::medium::ChunkSize::default()),
 				data: data.into()
 			}
 		}
 	}
-}
-
-/// Errors that can occur when calling [`Image::shm_from`]
-#[cfg(feature = "image-crate")]
-#[derive(thiserror::Error, Debug)]
-pub enum FromShmErr {
-	/// The Shared Memory Object couldn't be opened
-	#[error("Couldn't open shm: {0}")]
-	ShmOpen(std::io::Error),
-	/// We couldn't set the size of the shm
-	#[error("Couldn't set shm's size: {0}")]
-	SetSize(std::io::Error),
-	/// We couldn't mmap the shm (which we need to do to write to it)
-	#[error("Couldn't mmap shm: {0}")]
-	ShmMap(std::io::Error)
 }
 
 #[cfg(feature = "image-crate")]
@@ -108,48 +91,28 @@ impl<'data> Image<'data> {
 	///
 	/// [`shm_open`]: https://www.man7.org/linux/man-pages/man3/shm_open.3.html
 	#[cfg(unix)]
-	pub fn shm_from(
-		image: ::image::DynamicImage,
-		name: Cow<'data, str>
-	) -> Result<(Self, memmap2::MmapMut), FromShmErr> {
-		use psx_shm::{BorrowedMap, OpenMode, OpenOptions};
+	pub fn shm_from(image: ::image::DynamicImage, name: &str) -> std::io::Result<Self> {
+		use crate::medium::SharedMemObject;
 
 		let (format, data) = Image::fmt_and_data_from(image);
 
-		let oflags = OpenOptions::CREATE | OpenOptions::READWRITE;
-		let mode = OpenMode::R_USR | OpenMode::W_USR;
-		let mut shm = psx_shm::Shm::open(&name, oflags, mode).map_err(FromShmErr::ShmOpen)?;
+		let mut obj = SharedMemObject::create_new(name, data.len())?;
+		obj.copy_in_buf(&data)?;
 
-		shm.set_size(data.len()).map_err(FromShmErr::SetSize)?;
-
-		let mut map = unsafe { shm.map(0) }.map_err(FromShmErr::ShmMap)?;
-
-		map.map().copy_from_slice(&data);
-
-		// TODO: I'm cheating here... it kinda fucks with rust's ownership model to require the
-		// client to 'own' the mmap while the terminal 'owns' the shm even though they both refer
-		// to the same bit of memory. I need to figure out how to model this better. Maybe with
-		// Yoke?
-		let map = unsafe { std::mem::transmute::<BorrowedMap<'_>, memmap2::MmapMut>(map) };
-		std::mem::forget(shm);
-
-		Ok((
-			Self {
-				num_or_id: NumberOrId::Number(NonZeroU32::new(1).unwrap()),
-				format,
-				medium: Medium::SharedMemObject { name }
-			},
-			map
-		))
+		Ok(Self {
+			num_or_id: NumberOrId::Number(NonZeroU32::new(1).unwrap()),
+			format,
+			medium: Medium::SharedMemObject(obj)
+		})
 	}
 
 	/// Pull the format and data (of that format) from a specific image. Used to convert a given
 	/// [`image::DynamicImage`] into an [`Image`]
 	pub fn fmt_and_data_from(image: ::image::DynamicImage) -> (PixelFormat, Vec<u8>) {
-		use DynamicImage::*;
+		use ::image::DynamicImage::*;
 
 		let (width, height) = (image.width(), image.height());
-		let dim = ImageDimensions { width, height };
+		let dim = crate::ImageDimensions { width, height };
 		match image {
 			ImageLuma8(_) | ImageRgb8(_) | ImageLuma16(_) | ImageRgb16(_) | ImageRgb32F(_) =>
 				(PixelFormat::Rgb24(dim, None), image.into_rgb8().into_vec()),
@@ -166,7 +129,7 @@ pub(crate) async fn read_parse_response_async<I: AsyncInputReader>(
 	mut reader: I,
 	image: NumberOrId,
 	placement_id: Option<PlacementId>
-) -> Result<ImageId, TransmitError<'static, 'static, I::Error>> {
+) -> Result<ImageId, TransmitError<I::Error>> {
 	let mut output = String::with_capacity("\x1b_Gi=;OK\x1b\\".len() + 10);
 	// Try to get the terminal's repsonse
 	if let Err(e) = reader
@@ -186,7 +149,7 @@ pub(crate) fn read_parse_response<I: InputReader>(
 	mut reader: I,
 	image: NumberOrId,
 	placement_id: Option<PlacementId>
-) -> Result<ImageId, TransmitError<'static, 'static, I::Error>> {
+) -> Result<ImageId, TransmitError<I::Error>> {
 	let mut output = String::with_capacity("\x1b_Gi=;OK\x1b\\".len() + 10);
 	// Try to get the terminal's repsonse
 	if let Err(e) = reader.read_esc_delimited_str(&mut output) {

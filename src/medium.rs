@@ -3,6 +3,7 @@
 use std::{borrow::Cow, io::Write, num::NonZeroU16, path::Path};
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD, write::EncoderWriter as Base64Encoder};
+use memmap2::MmapMut;
 
 use crate::Encoder;
 
@@ -60,9 +61,154 @@ pub enum Medium<'data> {
 	/// object](https://pubs.opengroup.org/onlinepubs/9699919799/functions/shm_open.html)
 	/// and on Windows is a [Named shared memory object]
 	/// (https://docs.microsoft.com/en-us/windows/win32/memory/creating-named-shared-memory).
-	SharedMemObject {
-		/// The name of the given object to be opened and passed to the terminal
-		name: Cow<'data, str>
+	SharedMemObject(SharedMemObject)
+}
+
+#[derive(Debug)]
+struct UnixShm {
+	shm: psx_shm::UnlinkOnDrop,
+	map: MmapMut
+}
+
+/// A Shared memory object which can be used for transferring an image over to the terminal. Works
+/// on both unix and windows
+#[derive(Debug)]
+pub struct SharedMemObject {
+	#[cfg(unix)]
+	inner: UnixShm,
+
+	#[cfg(windows)]
+	inner: winmmf::MemoryMappedFile<mmf::RwLock<'static>>
+}
+
+impl PartialEq for SharedMemObject {
+	fn eq(&self, other: &Self) -> bool {
+		// This is a very inefficient comparison 'cause it requires two allocations but whatever...
+		// I'm not sure how else to do it
+		self.name() == other.name()
+	}
+}
+
+impl SharedMemObject {
+	/// Construct a new instance from just a name. Calling this fn requires that `name` is not
+	/// currently in use as a name for a shm - if it is, this could result in memory unsoundness
+	/// due to the fact that we expose the ability to write to this object through
+	/// [`Self::write_handle`] and we need to be sure that nothing else is writing to it at the
+	/// same time.
+	#[cfg(unix)]
+	pub fn create_new(name: &str, size: usize) -> std::io::Result<Self> {
+		use psx_shm::UnlinkOnDrop;
+		use rustix::{fs::Mode, shm::OFlags};
+
+		let mut shm = psx_shm::Shm::open(
+			name,
+			OFlags::RDWR | OFlags::CREATE | OFlags::EXCL,
+			Mode::RUSR | Mode::WUSR
+		)?;
+
+		shm.set_size(size)?;
+
+		let borrowed_mmap = unsafe { shm.map(0) }?;
+		// SAFETY: This is safe because we are not then creating another
+		let map = unsafe { borrowed_mmap.into_map() };
+		Ok(Self {
+			inner: UnixShm {
+				shm: UnlinkOnDrop { shm },
+				map
+			}
+		})
+	}
+
+	/// Construct a new instance after opening a [`winmmf::MemoryMappedFile`].
+	///
+	/// # Safety
+	///
+	/// `inner` must have been created by this process, and must be the only open instance of this
+	/// `MemoryMappedFile`. If it can be written to by anyone else, undefined behavior can be
+	/// triggered by using [`Self::write_handler`]
+	#[cfg(windows)]
+	pub unsafe fn new(inner: winmmf::MemoryMappedFile<mmf::RwLock<'static>>) -> Self {
+		Self { inner }
+	}
+
+	fn name(&self) -> Box<str> {
+		#[cfg(unix)]
+		{
+			self.inner.shm.shm.name().into()
+		}
+
+		#[cfg(windows)]
+		{
+			self.inner.fullname().into()
+		}
+	}
+
+	/// Replace the entire contents of this shm's memory with the given buffer. This will return an
+	/// error if the buffer can't fit in self.
+	pub fn copy_in_buf(&mut self, buf: &[u8]) -> std::io::Result<()> {
+		let buf_len = buf.len();
+
+		#[cfg(unix)]
+		{
+			use std::cmp::Ordering;
+
+			match buf_len.cmp(&self.inner.map.as_ref().len()) {
+				Ordering::Less => {
+					self.inner.map[..buf_len].copy_from_slice(buf);
+					for byte in &mut self.inner.map[buf_len..] {
+						*byte = 0;
+					}
+				}
+				Ordering::Equal => self.inner.map.copy_from_slice(buf),
+				Ordering::Greater =>
+					return Err(std::io::Error::new(
+						std::io::ErrorKind::InvalidInput,
+						"Provided buffer is too large to fit"
+					)),
+			}
+
+			Ok(())
+		}
+
+		#[cfg(windows)]
+		{
+			use std::io::{Error as IOError, ErrorKind};
+
+			use winmmf::err::Error;
+
+			match self.inner.write(buf) {
+				Ok(()) => Ok(()),
+				Err(e) => match e {
+					Error::ReadLocked => IOError::new(
+						ErrorKind::ResourceBusy,
+						"The MMF is locked by a reader, so we can't write to it at the moment"
+					),
+					Error::WriteLocked => IOError::new(
+						ErrorKind::ResourceBusy,
+						"The MMF is locked by another writer, so we can't write to it at the moment"
+					),
+					Error::MaxReaders => IOError::new(
+						ErrorKind::QuotaExceeded,
+						"More than 128 readers were active at the same time; back off"
+					),
+					Error::NotEnoughMemory => IOError::new(
+						ErrorKind::OutOfMemory,
+						"The MMF does not have enough memory to store this buffer"
+					),
+					Error::MMF_NotFound => IOError::other(
+						"The MMF was opened as read-only, was already closed, or couldn't be initialized properly"
+					),
+					Error::LockViolation =>
+						IOError::other("A lock violation occurred with this MMF"),
+					Error::MaxTriesReached => IOError::new(
+						ErrorKind::ResourceBusy,
+						"The MMF is locked and we spun for the max amount of times to try to get access without success"
+					),
+					Error::GeneralFailure => IOError::other("A general error occurred"),
+					Error::OS_Err(e) | Error::OS_OK(e) => IOError::other(e)
+				}
+			}
+		}
 	}
 }
 
@@ -74,6 +220,7 @@ pub(crate) fn write_b64<W: Write>(data: &[u8], writer: W) -> std::io::Result<W> 
 
 impl Medium<'_> {
 	pub(crate) fn write_data<W: Write>(&self, mut writer: W) -> Result<W, std::io::Error> {
+		let name: Box<str>;
 		let (key, data) = match self {
 			Self::Direct { data, chunk_size } => {
 				if let Some(chunk_size) = chunk_size {
@@ -113,7 +260,10 @@ impl Medium<'_> {
 			}
 			Self::File(path) => ('f', path.as_os_str().as_encoded_bytes()),
 			Self::TempFile(path) => ('t', path.as_os_str().as_encoded_bytes()),
-			Self::SharedMemObject { name } => ('s', name.as_bytes())
+			Self::SharedMemObject(obj) => {
+				name = obj.name();
+				('s', name.as_bytes())
+			}
 		};
 
 		write!(writer, ",t={key};")?;

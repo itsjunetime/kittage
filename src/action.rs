@@ -89,10 +89,10 @@ impl<'image, 'data> Action<'image, 'data> {
 	/// [`Self::execute`] and only does a part of what is necessary to fully interact with a
 	/// terminal. The full details can be found at [`Self::execute`].
 	pub fn write_transmit_to<W: Write>(
-		self,
+		&self,
 		writer: W,
-		verbosity: Verbosity
-	) -> Result<W, (Box<Self>, std::io::Error)> {
+		verbosity: Verbosity // ) -> Result<W, (Box<Self>, std::io::Error)> {
+	) -> Result<W, std::io::Error> {
 		fn inner_for_stdio<'image, 'data, W: Write>(
 			img: &Action<'image, 'data>,
 			mut writer: W,
@@ -139,7 +139,7 @@ impl<'image, 'data> Action<'image, 'data> {
 			Ok(writer)
 		}
 
-		inner_for_stdio(&self, writer, verbosity).map_err(|e| (Box::new(self), e))
+		inner_for_stdio(self, writer, verbosity) // .map_err(|e| (Box::new(self), e))
 	}
 
 	fn extract_num_or_id_and_placement(&self) -> Option<(NumberOrId, Option<PlacementId>)> {
@@ -181,12 +181,12 @@ impl<'image, 'data> Action<'image, 'data> {
 		self,
 		writer: W,
 		reader: I
-	) -> Result<(W, ImageId), TransmitError<'image, 'data, I::Error>> {
+	) -> Result<(W, ImageId), TransmitError<I::Error>> {
 		let id_and_p = self.extract_num_or_id_and_placement();
 
 		let writer = self
 			.write_transmit_to(writer, Verbosity::All)
-			.map_err(|(i, e)| TransmitError::Writing(i, e))?;
+			.map_err(TransmitError::Writing)?;
 
 		let img_id = if let Some((id_or_num, placement_id)) = id_and_p {
 			read_parse_response(reader, id_or_num, placement_id)?
@@ -201,12 +201,12 @@ impl<'image, 'data> Action<'image, 'data> {
 		self,
 		writer: W,
 		reader: I
-	) -> Result<(W, ImageId), TransmitError<'image, 'data, I::Error>> {
+	) -> Result<(W, ImageId), TransmitError<I::Error>> {
 		let id_and_p = self.extract_num_or_id_and_placement();
 
 		let writer = self
 			.write_transmit_to(writer, Verbosity::All)
-			.map_err(|(i, e)| TransmitError::Writing(i, e))?;
+			.map_err(TransmitError::Writing)?;
 
 		let img_id = if let Some((id_or_num, placement_id)) = id_and_p {
 			read_parse_response_async(reader, id_or_num, placement_id).await?

@@ -394,18 +394,18 @@ pub(crate) mod lib_tests {
 		s
 	}
 
-	fn spawn_kitty_with_image<'data>(
-		image: Image<'data>
-	) -> Result<(), TransmitError<'data, 'static, Infallible>> {
+	fn spawn_kitty_with_image<'data>(image: Image<'data>) -> Result<(), TransmitError<Infallible>> {
 		let mut output = Vec::new();
 		let num_or_id = image.num_or_id;
-		Action::TransmitAndDisplay {
+		let action = Action::TransmitAndDisplay {
 			image,
 			config: DisplayConfig::default(),
 			placement_id: None
-		}
-		.write_transmit_to(&mut output, Verbosity::All)
-		.unwrap();
+		};
+
+		action
+			.write_transmit_to(&mut output, Verbosity::All)
+			.unwrap();
 
 		println!("here's output: {:?}", str::from_utf8(&output).unwrap());
 
@@ -415,6 +415,9 @@ pub(crate) mod lib_tests {
 			|e| Err(TransmitError::ParsingResponse(e)),
 			|res| res.map_err(TransmitError::Terminal)
 		)?;
+
+		drop(action);
+
 		Ok(())
 	}
 
@@ -651,7 +654,7 @@ pub(crate) mod lib_tests {
 	#[tokio::test]
 	#[cfg(unix)]
 	async fn png_unix_shm_succeeds() {
-		use psx_shm::{OpenMode, OpenOptions};
+		use crate::medium::SharedMemObject;
 
 		let data = std::fs::read(png_path()).unwrap();
 		let name = format!(
@@ -661,24 +664,16 @@ pub(crate) mod lib_tests {
 				.unwrap()
 				.as_nanos()
 		);
-		let open_opts = OpenOptions::CREATE | OpenOptions::READWRITE;
-		let open_mode = OpenMode::R_USR | OpenMode::W_USR;
-		let mut shm = psx_shm::Shm::open(&name, open_opts, open_mode).unwrap();
-		shm.set_size(data.len()).unwrap();
 
-		let mut mapped = unsafe { shm.map(0) }.unwrap();
-		mapped.map().copy_from_slice(&data);
+		let mut obj = SharedMemObject::create_new(&name, data.len()).unwrap();
+		obj.copy_in_buf(&data).unwrap();
 
 		let img = Image {
 			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
 			format: PixelFormat::Png(None),
-			medium: Medium::SharedMemObject { name: name.into() }
+			medium: Medium::SharedMemObject(obj)
 		};
 
 		spawn_kitty_with_image(img).unwrap();
-
-		// the backing mem region will be unmapped once this is dropped, so we need to drop it
-		// after doing the test
-		drop(mapped);
 	}
 }
