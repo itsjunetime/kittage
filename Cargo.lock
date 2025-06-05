@@ -795,6 +795,7 @@ dependencies = [
 [[package]]
 name = "psx-shm"
 version = "0.1.1"
+source = "git+https://github.com/itsjunetime/psx-shm.git#3fcbae91217cd50ea0e4c838276ef7500cccf024"
 dependencies = [
  "memmap2",
  "rustix",

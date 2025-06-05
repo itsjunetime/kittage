@@ -13,7 +13,7 @@ image = { version = "0.25", default-features = false, optional = true }
 vb64 = { git = "https://github.com/lukaslihotzki/vb64", rev = "01e791186f57982511a3bcfb0d2316010c1adef0", optional = true }
 
 [target.'cfg(unix)'.dependencies]
-psx-shm = { path = "../psx-shm" }
+psx-shm = { git = "https://github.com/itsjunetime/psx-shm.git" }
 memmap2 = "0.9"
 rustix = { version = "1", default-features = false, features = ["shm"] }
 
