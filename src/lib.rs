@@ -9,6 +9,7 @@ pub mod error;
 pub mod event_stream;
 pub mod image;
 pub mod medium;
+pub mod tmux;
 
 use std::{error::Error, fmt::Display, io::Write, num::NonZeroU32, time::Duration};
 

@@ -93,7 +93,7 @@ impl SharedMemObject {
 	/// Construct a new instance from just a name. Calling this fn requires that `name` is not
 	/// currently in use as a name for a shm - if it is, this could result in memory unsoundness
 	/// due to the fact that we expose the ability to write to this object through
-	/// [`Self::write_handle`] and we need to be sure that nothing else is writing to it at the
+	/// [`Self::copy_in_buf`] and we need to be sure that nothing else is writing to it at the
 	/// same time.
 	#[cfg(unix)]
 	pub fn create_new(name: &str, size: usize) -> std::io::Result<Self> {
@@ -108,8 +108,13 @@ impl SharedMemObject {
 
 		shm.set_size(size)?;
 
+		// SAFETY: We are not mapping an actual file on disc, and because we use the `EXCL` flag up
+		// above, we can ensure that no other process has access to this (unless they, immediately
+		// after we created the shm, happened to also open it with the same name without us telling
+		// them about it, but that's the same sort of risk as someone writing to /dev/mem so we're
+		// not worrying about it)
 		let borrowed_mmap = unsafe { shm.map(0) }?;
-		// SAFETY: This is safe because we are not then creating another
+		// SAFETY: This is sound because we are not then creating another map
 		let map = unsafe { borrowed_mmap.into_map() };
 		Ok(Self {
 			inner: UnixShm {
