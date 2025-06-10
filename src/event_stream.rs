@@ -170,6 +170,7 @@ mod tests {
 	}
 
 	#[test]
+	#[serial_test::serial(event_stream)]
 	fn spawning_kitty_receives_internal_exit_code() {
 		if std::env::var(REAL_TEST_VAR).is_err() {
 			spawn_kitty_for("spawning_kitty_receives_internal_exit_code", 47);
@@ -197,6 +198,7 @@ mod tests {
 	}
 
 	#[tokio::test]
+	#[serial_test::serial(event_stream)]
 	async fn transmit_display_then_display() {
 		divert_if_not_spawned_test!("transmit_display_then_display");
 
@@ -276,6 +278,7 @@ mod tests {
 	}
 
 	#[tokio::test]
+	#[serial_test::serial(event_stream)]
 	async fn fails_inside_kitty() {
 		divert_if_not_spawned_test!("fails_inside_kitty");
 

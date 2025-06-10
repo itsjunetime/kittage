@@ -139,7 +139,7 @@ impl<'image, 'data> Action<'image, 'data> {
 			Ok(writer)
 		}
 
-		inner_for_stdio(self, writer, verbosity) // .map_err(|e| (Box::new(self), e))
+		inner_for_stdio(self, writer, verbosity)
 	}
 
 	fn extract_num_or_id_and_placement(&self) -> Option<(NumberOrId, Option<PlacementId>)> {

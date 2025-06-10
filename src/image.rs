@@ -53,7 +53,6 @@ impl Image<'_> {
 		// Then write the data itself, in its format
 		writer = self.medium.write_data(writer)?;
 		write!(writer, "\x1b\\")?;
-		writer.flush()?;
 		Ok(writer)
 	}
 }

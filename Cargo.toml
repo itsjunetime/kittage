@@ -30,6 +30,7 @@ futures-core = "0.3"
 nix = { version = "0.30", features = ["fs"] }
 image = { version = "0.25", features = ["png"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
+serial_test = "3"
 
 [lints.clippy]
 uninlined_format_args = "warn"
