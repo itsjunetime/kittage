@@ -64,6 +64,7 @@ pub enum Medium<'data> {
 	SharedMemObject(SharedMemObject)
 }
 
+#[cfg(unix)]
 #[derive(Debug)]
 struct UnixShm {
 	shm: psx_shm::UnlinkOnDrop,
@@ -116,6 +117,7 @@ impl SharedMemObject {
 		let borrowed_mmap = unsafe { shm.map(0) }?;
 		// SAFETY: This is sound because we are not then creating another map
 		let map = unsafe { borrowed_mmap.into_map() };
+
 		Ok(Self {
 			inner: UnixShm {
 				shm: UnlinkOnDrop { shm },

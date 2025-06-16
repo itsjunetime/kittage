@@ -11,6 +11,7 @@ futures-core = { version = "0.3.31", optional = true }
 tokio = { version = "1", default-features = false, features = ["time"], optional = true }
 image = { version = "0.25", default-features = false, optional = true }
 vb64 = { git = "https://github.com/lukaslihotzki/vb64", rev = "01e791186f57982511a3bcfb0d2316010c1adef0", optional = true }
+memchr = "2.7.5"
 
 [target.'cfg(unix)'.dependencies]
 psx-shm = { git = "https://github.com/itsjunetime/psx-shm.git" }
