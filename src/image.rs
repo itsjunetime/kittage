@@ -138,6 +138,9 @@ pub(crate) async fn read_parse_response_async<I: AsyncInputReader>(
 		return Err(TransmitError::ReadingInput(e));
 	}
 
+	#[cfg(feature = "log")]
+	log::trace!("got terminal output {output:?}");
+
 	parse_response(output, image, placement_id).map_or_else(
 		|e| Err(TransmitError::ParsingResponse(e)),
 		|res| res.map_err(TransmitError::Terminal)

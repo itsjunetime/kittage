@@ -12,6 +12,7 @@ tokio = { version = "1", default-features = false, features = ["time"], optional
 image = { version = "0.25", default-features = false, optional = true }
 vb64 = { git = "https://github.com/lukaslihotzki/vb64", rev = "01e791186f57982511a3bcfb0d2316010c1adef0", optional = true }
 memchr = "2.7.5"
+log = { version = "0.4.27", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 psx-shm = { git = "https://github.com/itsjunetime/psx-shm.git" }
@@ -22,6 +23,7 @@ rustix = { version = "1", default-features = false, features = ["shm"] }
 default = ["image-crate"]
 crossterm-tokio = ["dep:crossterm", "dep:futures-core", "dep:tokio"]
 image-crate = ["dep:image"]
+log = ["dep:log"]
 nightly = ["dep:vb64"]
 
 [dev-dependencies]
