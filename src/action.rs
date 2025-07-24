@@ -10,7 +10,7 @@ use crate::{
 
 /// The different actions one can take to interact with a terminal which supports the kitty image
 /// protocol. This is the main interaction point with the terminal - one should construct an
-/// [`Action`] and [`Action::send`] it
+/// [`Action`] and [`Action::execute`] it
 #[derive(Debug, PartialEq)]
 pub enum Action<'image, 'data> {
 	/// This simply sends the image data to the terminal, but does not display it. It also
@@ -88,10 +88,14 @@ impl<'image, 'data> Action<'image, 'data> {
 	/// Write the transmit code for this [`Action`] to `writer` - this is the first part of
 	/// [`Self::execute`] and only does a part of what is necessary to fully interact with a
 	/// terminal. The full details can be found at [`Self::execute`].
+	///
+	/// # Errors
+	///
+	/// This will error if writing to `writer` ever returns an error.
 	pub fn write_transmit_to<W: Write>(
 		&self,
 		writer: W,
-		verbosity: Verbosity // ) -> Result<W, (Box<Self>, std::io::Error)> {
+		verbosity: Verbosity
 	) -> Result<W, std::io::Error> {
 		fn inner_for_stdio<'image, 'data, W: Write>(
 			img: &Action<'image, 'data>,
@@ -142,6 +146,7 @@ impl<'image, 'data> Action<'image, 'data> {
 		inner_for_stdio(self, writer, verbosity)
 	}
 
+	/// This pulls the [`NumberOrId`] and [`PlacementId`] out of self
 	fn extract_num_or_id_and_placement(&self) -> Option<(NumberOrId, Option<PlacementId>)> {
 		match self {
 			Self::Transmit(img) => Some((img.num_or_id, None)),
@@ -171,12 +176,22 @@ impl<'image, 'data> Action<'image, 'data> {
 	/// 4. Parses the terminal's response and returns any errors that occur or are transmitted
 	///
 	/// Steps 1 & 2 are performed simply by calling [`Self::write_transmit_to`], so this library
-	/// can be used in a sans-io method by using that instead. ([TODO]: make the parse method pub
+	/// can be used in a sans-io method by using that instead. (**TODO**: make the parse method pub
 	/// in a more ergonomic API)
 	///
 	/// For this function to work correctly, `writer` should be writing directly to something that
 	/// flushes directly to a kitty-supporting terminal. This function assumes that, once flushed
 	/// to `writer`, the terminal will respond and this response can be read by `reader`.
+	///
+	/// [`Medium::SharedMemObject`]: crate::medium::Medium::SharedMemObject
+	///
+	/// # Errors
+	///
+	/// This can return errors if:
+	/// - Writing to `writer` fails at any point
+	/// - The `reader` fails to read a response from the terminal
+	/// - The response from the terminal is unparseable
+	/// - The response from the terminal informs us that it ran into an error
 	pub fn execute<W: Write, I: InputReader>(
 		self,
 		writer: W,
@@ -191,12 +206,19 @@ impl<'image, 'data> Action<'image, 'data> {
 		let img_id = if let Some((id_or_num, placement_id)) = id_and_p {
 			read_parse_response(reader, id_or_num, placement_id)?
 		} else {
-			NonZeroU32::new(1).unwrap()
+			// We have to use a constant here 'cause if we have the `unwrap()` syntactically
+			// existing inside this fn, clippy insists it can panic at runtime and thus we need a
+			// section of settings detailing how it could panid
+			NONZERO_ONE
 		};
 		Ok((writer, img_id))
 	}
 
 	/// An async version of [`Self::execute`] - check its documentation for more details
+	///
+	/// # Errors
+	///
+	/// - This may return an error in the same situations that [`Self::execute`] may.
 	pub async fn execute_async<W: Write, I: AsyncInputReader>(
 		self,
 		writer: W,
@@ -211,8 +233,11 @@ impl<'image, 'data> Action<'image, 'data> {
 		let img_id = if let Some((id_or_num, placement_id)) = id_and_p {
 			read_parse_response_async(reader, id_or_num, placement_id).await?
 		} else {
-			NonZeroU32::new(1).unwrap()
+			NONZERO_ONE
 		};
 		Ok((writer, img_id))
 	}
 }
+
+/// Just a constant we reuse sometimes. A [`NonZeroU32`] wrapping the value 1.
+pub const NONZERO_ONE: NonZeroU32 = const { NonZeroU32::new(1).unwrap() };

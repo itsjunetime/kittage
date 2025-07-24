@@ -1,9 +1,6 @@
 - Spec doesn't say that you MUST specify either `i` or `I`, but it seems to not respond if you have neither
-- `echo -ne '\e_GI=9,a=q,t=f;L2hvbWUvanVuZS9QaWN0dXJlcy9tb25rZXl0eXBlLnBuZw\e\\'` results in no error, while `echo -ne '\e_GI=9,a=T,t=f;L2hvbWUvanVuZS9QaWN0dXJlcy9tb25rZXl0eXBlLnBuZw\e\\'` reports an error
 - Using an id of 0 silently fails (instead of reporting an error or displaying an anonymous image)
 - We need clarification on what will be responded to with an error and what will simply be ignored
 - Is the total size limit that the terminal operates on dependent upon pre-compressed data or post-compressed data (if someone is using compression)
 - Does 'delete all intersecting with cursor' include those with a non-zero z-index?
 - Are implementing terminals expected to be able to read any common image filetype or just png/rgb/rgba
-- I think compressed png data just doesn't work?
-- Is the terminal supposed to `shm_unlink` AND `munmap` or just `shm_unlink`?

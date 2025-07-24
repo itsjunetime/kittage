@@ -1,7 +1,7 @@
-#![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
 pub mod action;
+// pub mod animation;
 pub mod delete;
 pub mod display;
 pub mod error;
@@ -16,7 +16,16 @@ use std::{error::Error, fmt::Display, io::Write, num::NonZeroU32, time::Duration
 use base64::{engine::GeneralPurpose, write::EncoderWriter as Base64Encoder};
 use image::{Image, read_parse_response, read_parse_response_async};
 
+/// Utility trait for allowing us to actually correctly use [`Write::write_all`] on
+/// [`Base64Encoder`] since the blanket implementation doesn't work correctly and they don't want
+/// to override it for some reason
 trait Encoder<W: Write>: Write {
+	/// basically just [`Write::write_all`] but don't short-circuit if the underlying writer ever
+	/// returns `Ok(0)` for an individual [`Write::write`] call
+	///
+	/// # Errors
+	///
+	/// - This can error if the underlying [`Write::write`] call fails
 	fn write_all_allow_empty(&mut self, slice: &[u8]) -> std::io::Result<()> {
 		let mut total_written = 0;
 		while let Some(remaining) = slice.get(total_written..) {
@@ -31,8 +40,15 @@ trait Encoder<W: Write>: Write {
 
 impl<W: Write> Encoder<W> for Base64Encoder<'_, GeneralPurpose, W> {}
 
+/// A way to associate specific key characters with the type of integer that correctly represents
+/// their range of allowable values
 trait Encodable<W: Write, const KEY: char>: PartialEq + Sized {
+	/// Their default value - if an integer is equal to this when we're going to write it, we just
+	/// don't write anything.
 	const DEFAULT: Self;
+
+	/// Write the value, along with its key and a preceding command, to the writer, if it doesn't
+	/// equal [`Self::DEFAULT`]
 	fn write_kv_encoded(&self, mut writer: W) -> std::io::Result<W> {
 		if self == &Self::DEFAULT {
 			return Ok(writer);
@@ -40,16 +56,16 @@ trait Encodable<W: Write, const KEY: char>: PartialEq + Sized {
 		write!(writer, ",{KEY}=")?;
 		self.write_value_to(writer)
 	}
+
+	/// just write its value - the method one that does not have a default implementation
 	fn write_value_to(&self, writer: W) -> std::io::Result<W>;
 }
 
+/// Convenience trait for writing integers to a writer
 pub(crate) trait WriteUint: Write + Sized {
+	/// Just `u.write_kv_encoded(self)`, but this way we can chain calls.
 	fn write_uint<const KEY: char, E: Encodable<Self, KEY>>(self, u: E) -> std::io::Result<Self> {
-		if u != E::DEFAULT {
-			u.write_kv_encoded(self)
-		} else {
-			Ok(self)
-		}
+		u.write_kv_encoded(self)
 	}
 }
 
@@ -71,7 +87,7 @@ pub enum PixelFormat {
 	/// then you must also supply the total size, in bytes, of the compressed data (not how much
 	/// space it will decompress to, but rather how much space the terminal emulator should read to
 	/// then decode to get the image)
-	Png(Option<(Compression, u32)>)
+	Png(Option<(Compression, usize)>)
 }
 
 impl<W: Write> Encodable<W, 'f'> for PixelFormat {
@@ -111,7 +127,7 @@ impl<W: Write> Encodable<W, 'f'> for PixelFormat {
 				if let Some((cmp, size)) = cmp_and_size {
 					writer = Some(*cmp)
 						.write_kv_encoded(writer)?
-						.write_uint::<COMPRESSED_DATA_SIZE_KEY, _>(*size)?;
+						.write_uint::<READ_SIZE_KEY, _>(*size)?;
 				}
 				Ok(writer)
 			}
@@ -132,7 +148,6 @@ pub struct ImageDimensions {
 
 pub(crate) const SOURCE_WIDTH_KEY: char = 's';
 pub(crate) const SOURCE_HEIGHT_KEY: char = 'v';
-pub(crate) const COMPRESSED_DATA_SIZE_KEY: char = 's';
 pub(crate) const READ_SIZE_KEY: char = 'S';
 pub(crate) const READ_OFFSET_KEY: char = 'O';
 pub(crate) const REMAINING_CHUNKS_KEY: char = 'm';
@@ -161,6 +176,7 @@ pub(crate) const PARENT_PLACEMENT_KEY: char = 'Q';
 
 pub(crate) const VERBOSITY_LEVEL_KEY: char = 'q';
 
+/// Implement `Encodable<$key> for $int` for each $key
 macro_rules! impl_encodable_for_int {
 	($int:ty => $($key:expr,)+) => {
 		$(impl<W: Write> Encodable<W, $key> for $int {
@@ -181,7 +197,7 @@ impl_encodable_for_int!(
 		   DISPLAY_WIDTH_SLICE_KEY, DISPLAY_HEIGHT_SLICE_KEY, PARENT_ID_KEY, PARENT_PLACEMENT_KEY,
 );
 impl_encodable_for_int!(
-	usize => COMPRESSED_DATA_SIZE_KEY, READ_SIZE_KEY, READ_OFFSET_KEY, PIXEL_X_OFFSET_KEY, PIXEL_Y_OFFSET_KEY,
+	usize => READ_SIZE_KEY, READ_OFFSET_KEY, PIXEL_X_OFFSET_KEY, PIXEL_Y_OFFSET_KEY,
 );
 
 /// Which method of compression was used to compress the data being sent to the terminal
@@ -233,6 +249,10 @@ pub trait InputReader {
 	type Error: Error;
 	/// Does the same as [`AsyncInputReader::read_esc_delimited_str_with_timeout`], except with no
 	/// timeout - it is expected to block forever if it can't find `\x1b`s.
+	///
+	/// # Errors
+	///
+	/// This can return an error for any reason, depending on the implementation
 	fn read_esc_delimited_str(&mut self, buf: &mut String) -> Result<(), Self::Error>;
 }
 
@@ -620,11 +640,10 @@ pub(crate) mod lib_tests {
 	}
 
 	#[tokio::test]
-	#[ignore = "i think the underlying kitty is the reason for this failure"]
 	async fn direct_unchunked_compressed_png_succeeds() {
 		let img_data = std::fs::read(png_path()).unwrap();
 
-		let precompressed_size = u32::try_from(img_data.len()).unwrap();
+		let precompressed_size = img_data.len();
 		let mut compressor = ZlibEncoder::new(Vec::new(), FlateCompression::fast());
 		compressor.write_all(&img_data).unwrap();
 		let img_data = compressor.finish().unwrap();

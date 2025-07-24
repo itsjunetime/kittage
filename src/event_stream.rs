@@ -169,25 +169,29 @@ mod tests {
 		);
 	}
 
-	#[test]
-	#[serial_test::serial(event_stream)]
-	fn spawning_kitty_receives_internal_exit_code() {
-		if std::env::var(REAL_TEST_VAR).is_err() {
-			spawn_kitty_for("spawning_kitty_receives_internal_exit_code", 47);
-			return;
-		}
+	struct DisableRawModeOnDrop;
 
-		std::process::exit(47);
+	impl Drop for DisableRawModeOnDrop {
+		fn drop(&mut self) {
+			drop(disable_raw_mode());
+		}
 	}
 
 	macro_rules! divert_if_not_spawned_test {
-		($test:expr) => {
+		($test:expr, $err_code:expr) => {
+			if std::env::var("KITTY_WINDOW_ID").is_err() {
+				panic!("This test only works if you run it when already inside kitty. Yeah I don't fuckin get it either. Just open kitty and run the `cargo test` from there")
+			}
+
 			if std::env::var(REAL_TEST_VAR).is_err() {
-				spawn_kitty_for($test, 0);
+				spawn_kitty_for($test, $err_code);
 				return;
 			}
 
 			enable_raw_mode().unwrap();
+
+			// yes im cheating. wahoo
+			let _p = DisableRawModeOnDrop;
 
 			let old_hook = take_hook();
 			set_hook(Box::new(move |panic_info| {
@@ -197,10 +201,18 @@ mod tests {
 		};
 	}
 
+	#[test]
+	#[serial_test::serial(event_stream)]
+	fn spawning_kitty_receives_internal_exit_code() {
+		divert_if_not_spawned_test!("spawning_kitty_receives_internal_exit_code", 47);
+
+		std::process::exit(47);
+	}
+
 	#[tokio::test]
 	#[serial_test::serial(event_stream)]
 	async fn transmit_display_then_display() {
-		divert_if_not_spawned_test!("transmit_display_then_display");
+		divert_if_not_spawned_test!("transmit_display_then_display", 0);
 
 		let img_path = png_path();
 
@@ -273,14 +285,12 @@ mod tests {
 			println!("tried to print {:?}", writer.buf);
 			panic!("{e}");
 		}
-
-		disable_raw_mode().unwrap();
 	}
 
 	#[tokio::test]
 	#[serial_test::serial(event_stream)]
 	async fn fails_inside_kitty() {
-		divert_if_not_spawned_test!("fails_inside_kitty");
+		divert_if_not_spawned_test!("fails_inside_kitty", 0);
 
 		let mut ev_stream = EventStream::new();
 		let stdout = std::io::stdout().lock();
@@ -304,7 +314,5 @@ mod tests {
 				"Failed to open file for graphics transmission with error".into()
 			))
 		);
-
-		disable_raw_mode().unwrap();
 	}
 }

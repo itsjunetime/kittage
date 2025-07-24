@@ -1,10 +1,10 @@
-//! Types and functions to facilitate [`crate::Action::Delete`]
+//! Types and functions to facilitate [`crate::action::Action::Delete`]
 
 use std::{io::Write, ops::RangeInclusive};
 
 use crate::{ImageId, ImageNumber, PlacementId};
 
-/// What to delete when using [`crate::Action::Delete`]
+/// What to delete when using [`crate::action::Action::Delete`]
 #[derive(PartialEq, Debug, Clone)]
 pub struct DeleteConfig {
 	/// Whether to just clear the specified images from the screen ([`ClearOrDelete::Clear`]) or
@@ -19,11 +19,13 @@ pub struct DeleteConfig {
 pub enum ClearOrDelete {
 	/// just clear them from the screen
 	Clear,
-	/// clear them AND delete them from memory
+	/// clear them from the screen AND delete them from memory
 	Delete
 }
 
 impl ClearOrDelete {
+	/// Make `c` uppercase if `self == Self::Delete`, otherwise keep it the same. This corresponds
+	/// with the behavior that kitty expects us to use to specify what to do with the deletions.
 	fn maybe_upper(self, c: char) -> char {
 		match self {
 			Self::Delete => c.to_ascii_uppercase(),
@@ -57,11 +59,11 @@ pub struct CellLocationZ {
 pub enum WhichToDelete {
 	/// Every single visible image (does not include non-visible)
 	All,
-	/// Only delete those with the specific ImageId. If a PlacementId is specified, then this only
-	/// deletes images with both the ImageId AND the PlacementId
+	/// Only delete those with the specific [`ImageId`]. If a [`PlacementId`] is specified, then
+	/// this only deletes images with both the [`ImageId`] AND the [`PlacementId`]
 	ImageId(ImageId, Option<PlacementId>),
-	/// Only delete those with the specific Image Number. If a PlacementId is specified, then this
-	/// only deletes images with both the ImageId AND the PlacementId
+	/// Only delete those with the specific [`ImageNumber`]. If a [`PlacementId`] is specified, then
+	/// this only deletes images with both the [`ImageId`] AND the [`PlacementId`]
 	NewestWithNumber(ImageNumber, Option<PlacementId>),
 	/// Only delete images which intersect with the cursor's current position
 	IntersectingWithCursor,
@@ -83,6 +85,7 @@ pub enum WhichToDelete {
 }
 
 impl DeleteConfig {
+	/// Encode this [`DeleteConfig`] into a string to be sent to kitty to communicate this deletion
 	pub(crate) fn write_to<W: Write>(&self, mut w: W) -> std::io::Result<W> {
 		let e = self.effect;
 

@@ -28,7 +28,7 @@ impl ChunkSize {
 
 impl Default for ChunkSize {
 	fn default() -> Self {
-		Self(NonZeroU16::new(1024).unwrap())
+		Self(const { NonZeroU16::new(1024).unwrap() })
 	}
 }
 
@@ -47,6 +47,10 @@ pub enum Medium<'data> {
 		/// The image data to be displayed - when using this to display an [`Image`] (or within an
 		/// [`Action`]), this data must be of the same underlying image format as the
 		/// [`PixelFormat`] specified.
+		///
+		/// [`Image`]: crate::Image
+		/// [`Action`]: crate::action::Action
+		/// [`PixelFormat`]: crate::PixelFormat
 		data: Cow<'data, [u8]>
 	},
 	/// A simple file (regular files only, not named pipes, device files, etc.)
@@ -59,15 +63,16 @@ pub enum Medium<'data> {
 	TempFile(Box<Path>),
 	/// A _shared memory object_, which on POSIX systems is a [POSIX shared memory
 	/// object](https://pubs.opengroup.org/onlinepubs/9699919799/functions/shm_open.html)
-	/// and on Windows is a [Named shared memory object]
-	/// (https://docs.microsoft.com/en-us/windows/win32/memory/creating-named-shared-memory).
+	/// and on Windows is a [Named shared memory object](https://docs.microsoft.com/en-us/windows/win32/memory/creating-named-shared-memory).
 	SharedMemObject(SharedMemObject)
 }
 
 #[cfg(unix)]
 #[derive(Debug)]
 struct UnixShm {
+	/// the shm itself - this must not be touched while this struct exists
 	shm: psx_shm::UnlinkOnDrop,
+	/// the map that we can use to write to the data held behind this struct
 	map: MmapMut
 }
 
@@ -75,9 +80,11 @@ struct UnixShm {
 /// on both unix and windows
 #[derive(Debug)]
 pub struct SharedMemObject {
+	/// The shm itself - nested since it needs two fields whereas the windows one only needs one
 	#[cfg(unix)]
 	inner: UnixShm,
 
+	/// The shm itself
 	#[cfg(windows)]
 	inner: winmmf::MemoryMappedFile<mmf::RwLock<'static>>
 }
@@ -91,11 +98,14 @@ impl PartialEq for SharedMemObject {
 }
 
 impl SharedMemObject {
-	/// Construct a new instance from just a name. Calling this fn requires that `name` is not
-	/// currently in use as a name for a shm - if it is, this could result in memory unsoundness
-	/// due to the fact that we expose the ability to write to this object through
-	/// [`Self::copy_in_buf`] and we need to be sure that nothing else is writing to it at the
-	/// same time.
+	/// Construct a new instance from just a name and a size. This opens a completely new shm - the
+	/// name must not be in use by any other shm on the system (this function will error if it is).
+	///
+	/// # Errors
+	///
+	/// This can return an error if any of the following are true:
+	/// - The provided name is already in use by another shm on the system
+	/// - An underlying syscall fails for some reason
 	#[cfg(unix)]
 	pub fn create_new(name: &str, size: usize) -> std::io::Result<Self> {
 		use psx_shm::UnlinkOnDrop;
@@ -112,7 +122,7 @@ impl SharedMemObject {
 		// SAFETY: We are not mapping an actual file on disc, and because we use the `EXCL` flag up
 		// above, we can ensure that no other process has access to this (unless they, immediately
 		// after we created the shm, happened to also open it with the same name without us telling
-		// them about it, but that's the same sort of risk as someone writing to /dev/mem so we're
+		// them about it, but that's the same sort of risk as someone writing to /proc/mem so we're
 		// not worrying about it)
 		let borrowed_mmap = unsafe { shm.map(0) }?;
 		// SAFETY: This is sound because we are not then creating another map
@@ -152,6 +162,13 @@ impl SharedMemObject {
 
 	/// Replace the entire contents of this shm's memory with the given buffer. This will return an
 	/// error if the buffer can't fit in self.
+	///
+	/// # Errors
+	///
+	/// On unix, this can only fail if the buffer size provided is larger than the size this shm
+	/// was created with.
+	///
+	/// On windows, this can fail for any reason representable by [`winmmf::err::Error`]
 	pub fn copy_in_buf(&mut self, buf: &[u8]) -> std::io::Result<()> {
 		let buf_len = buf.len();
 
@@ -219,6 +236,7 @@ impl SharedMemObject {
 	}
 }
 
+/// Just a wrapper for encoding a chunk of data as base64 and writing it to a writer
 pub(crate) fn write_b64<W: Write>(data: &[u8], writer: W) -> std::io::Result<W> {
 	let mut b64 = Base64Encoder::new(writer, &STANDARD_NO_PAD);
 	b64.write_all_allow_empty(data)?;
@@ -226,6 +244,8 @@ pub(crate) fn write_b64<W: Write>(data: &[u8], writer: W) -> std::io::Result<W> 
 }
 
 impl Medium<'_> {
+	/// Write the necessary utf8 for sending this data to kitty into the provided writer, returning
+	/// the writer or an error if something goes wrong
 	pub(crate) fn write_data<W: Write>(&self, mut writer: W) -> Result<W, std::io::Error> {
 		let name: Box<str>;
 		let (key, data) = match self {

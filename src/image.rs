@@ -26,6 +26,7 @@ pub struct Image<'data> {
 }
 
 impl Image<'_> {
+	/// Encode this [`Image`] to writer to send to kitty
 	pub(crate) fn write_transmit_to<W: Write>(
 		&self,
 		mut writer: W,
@@ -89,9 +90,14 @@ impl<'data> Image<'data> {
 	/// copied the memory into its own storage).
 	///
 	/// [`shm_open`]: https://www.man7.org/linux/man-pages/man3/shm_open.3.html
+	///
+	/// # Errors
+	///
+	/// This can error if the underlying calls to [`SharedMemObject::create_new`] or
+	/// [`SharedMemObject::copy_in_buf`] fail - those errors are bubbled up here.
 	#[cfg(unix)]
 	pub fn shm_from(image: ::image::DynamicImage, name: &str) -> std::io::Result<Self> {
-		use crate::medium::SharedMemObject;
+		use crate::{action::NONZERO_ONE, medium::SharedMemObject};
 
 		let (format, data) = Image::fmt_and_data_from(image);
 
@@ -99,7 +105,7 @@ impl<'data> Image<'data> {
 		obj.copy_in_buf(&data)?;
 
 		Ok(Self {
-			num_or_id: NumberOrId::Number(NonZeroU32::new(1).unwrap()),
+			num_or_id: NumberOrId::Number(NONZERO_ONE),
 			format,
 			medium: Medium::SharedMemObject(obj)
 		})
@@ -124,6 +130,7 @@ impl<'data> Image<'data> {
 	}
 }
 
+/// Same thing as [`read_parse_response`], just over an async interface
 pub(crate) async fn read_parse_response_async<I: AsyncInputReader>(
 	mut reader: I,
 	image: NumberOrId,
@@ -147,6 +154,7 @@ pub(crate) async fn read_parse_response_async<I: AsyncInputReader>(
 	)
 }
 
+/// Wrapper for [`parse_response`] that gets input from `reader` first and then feeds it in
 pub(crate) fn read_parse_response<I: InputReader>(
 	mut reader: I,
 	image: NumberOrId,
@@ -164,6 +172,8 @@ pub(crate) fn read_parse_response<I: InputReader>(
 	)
 }
 
+/// Parse `output` as a terminal response, with the knowledge that it came in response to a command
+/// that comtained `image` as the number/id and `placement_id` as the placementId sent in
 pub(crate) fn parse_response(
 	output: String,
 	image: NumberOrId,

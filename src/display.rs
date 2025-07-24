@@ -22,7 +22,10 @@ pub enum CursorMovementPolicy {
 }
 
 /// The details of how a specific image should be dislpayed onto the terminal surface. used in e.g.
-/// [`crate::Action::TransmitAndDisplay`] and [`crate::Action::Display`]
+/// [`Action::TransmitAndDisplay`] and [`Action::Display`]
+///
+/// [`Action::TransmitAndDisplay`]: crate::action::Action::TransmitAndDisplay
+/// [`Action::Display`]: crate::action::Action::Display
 #[derive(Default, Debug, PartialEq, Clone)]
 pub struct DisplayConfig {
 	/// The location to display it at
@@ -38,6 +41,7 @@ pub struct DisplayConfig {
 }
 
 impl DisplayConfig {
+	/// Encode this [`DisplayConfig`] into a writer to send to kitty
 	pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> std::io::Result<W> {
 		writer = self.location.write_to(writer)?;
 		if self.cursor_movement != CursorMovementPolicy::default() {
@@ -96,6 +100,7 @@ pub struct DisplayLocation {
 }
 
 impl DisplayLocation {
+	/// Encode this [`DisplayLocation`] into a writer to send to kitty
 	fn write_to<W: Write>(&self, w: W) -> std::io::Result<W> {
 		w.write_uint::<DISPLAY_START_X_KEY, _>(self.x)?
 			.write_uint::<DISPLAY_START_Y_KEY, _>(self.y)?

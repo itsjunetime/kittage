@@ -37,9 +37,9 @@ pub enum ParseError {
 	/// 1. When displaying an image, lock stdout until you get a response from the terminal. This
 	///    ensures that you can't have two images sent at the same time in such a way that their
 	///    responses get interleaved.
-	/// 2. Don't use ImageIds, but instead use ImageNumbers - that way if a transmission returns an
-	///    error due to this interleaving, we can easily retry without having to delete an image
-	///    first.
+	/// 2. Don't use [`ImageId`]s, but instead use [`ImageNumbers`] - that way if a transmission
+	///    returns an error due to this interleaving, we can easily retry without having to delete
+	///    an image first.
 	#[error(
 		"The ID of type {ty:?} seen in the terminal response was different from the one we sent (was {found}, expected {expected})"
 	)]
@@ -102,8 +102,10 @@ pub enum ParseError {
 }
 
 /// Errors that the underlying terminal could return to us in reponse to us writing to the terminal
-/// (e.g. with [`crate::Action::write_transmit_to`]). The exact list of error codes is not
+/// (e.g. with [`Action::write_transmit_to`]). The exact list of error codes is not
 /// specified by the specification, so this is non-exhaustive
+///
+/// [`Action::write_transmit_to`]: crate::action::Action::write_transmit_to
 #[non_exhaustive]
 #[derive(thiserror::Error, Debug, PartialEq)]
 pub enum TerminalError {
@@ -118,7 +120,7 @@ pub enum TerminalError {
 	BadFile(String),
 	/// "ENODATA" error code - No Data, such as when no data is sent over the [`Direct`] medium
 	///
-	/// [`Direct`]: crate::Medium::Direct
+	/// [`Direct`]: crate::medium::Medium::Direct
 	#[error("No Data: {0}")]
 	NoData(String),
 	/// "EFBIG" error code - too much data sent to the terminal for the provided
