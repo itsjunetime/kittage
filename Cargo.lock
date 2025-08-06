@@ -586,7 +586,6 @@ dependencies = [
  "serial_test",
  "thiserror 2.0.12",
  "tokio",
- "vb64",
 ]
 
 [[package]]
@@ -908,8 +907,9 @@ dependencies = [
 
 [[package]]
 name = "psx-shm"
-version = "0.1.1"
-source = "git+https://github.com/itsjunetime/psx-shm.git#3fcbae91217cd50ea0e4c838276ef7500cccf024"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "562d6abd69b7d14272c59b72b14e3ff058232197ac0846480d58f047140ce1a2"
 dependencies = [
  "memmap2",
  "rustix",
@@ -1380,11 +1380,6 @@ dependencies = [
  "num-traits",
  "wasm-bindgen",
 ]
-
-[[package]]
-name = "vb64"
-version = "0.1.2"
-source = "git+https://github.com/lukaslihotzki/vb64?rev=01e791186f57982511a3bcfb0d2316010c1adef0#01e791186f57982511a3bcfb0d2316010c1adef0"
 
 [[package]]
 name = "version-compare"

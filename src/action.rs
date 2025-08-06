@@ -78,10 +78,11 @@ pub enum Action<'image, 'data> {
 	Query(&'image Image<'data>),
 	/// Delete a specific set of images. See the [`DeleteConfig`] documentation for more details
 	/// about how to use
-	Delete(DeleteConfig),
-	TransmitAnimationFrames,
-	ControlAnimation,
-	ComposeAnimationFrames
+	Delete(DeleteConfig)
+	// we'll do these at some point
+	// TransmitAnimationFrames,
+	// ControlAnimation,
+	// ComposeAnimationFrames
 }
 
 impl<'image, 'data> Action<'image, 'data> {
@@ -135,7 +136,6 @@ impl<'image, 'data> Action<'image, 'data> {
 					write!(writer, "d")?;
 					del.write_to(writer)?
 				}
-				_ => todo!()
 			};
 
 			writer.flush()?;
@@ -161,8 +161,7 @@ impl<'image, 'data> Action<'image, 'data> {
 				placement_id,
 				..
 			} => Some((NumberOrId::Id(*image_id), Some(*placement_id))),
-			Self::Delete(_) => None,
-			_ => todo!()
+			Self::Delete(_) => None
 		}
 	}
 
