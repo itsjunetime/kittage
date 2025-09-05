@@ -28,6 +28,9 @@ psx-shm = "0.2"
 memmap2 = "0.9"
 rustix = { version = "1", default-features = false, features = ["shm"] }
 
+[target.'cfg(windows)'.dependencies]
+winmmf = "0.5"
+
 [features]
 default = []
 crossterm-tokio = ["dep:crossterm", "dep:futures-core", "dep:tokio"]

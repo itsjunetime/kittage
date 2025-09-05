@@ -3,7 +3,6 @@
 use std::{borrow::Cow, io::Write, num::NonZeroU16, path::Path};
 
 use base64::{engine::general_purpose::STANDARD_NO_PAD, write::EncoderWriter as Base64Encoder};
-use memmap2::MmapMut;
 
 use crate::Encoder;
 
@@ -73,7 +72,7 @@ struct UnixShm {
 	/// the shm itself - this must not be touched while this struct exists
 	shm: psx_shm::UnlinkOnDrop,
 	/// the map that we can use to write to the data held behind this struct
-	map: MmapMut
+	map: memmap2::MmapMut
 }
 
 /// A Shared memory object which can be used for transferring an image over to the terminal. Works
@@ -86,7 +85,7 @@ pub struct SharedMemObject {
 
 	/// The shm itself
 	#[cfg(windows)]
-	inner: winmmf::MemoryMappedFile<mmf::RwLock<'static>>
+	inner: winmmf::MemoryMappedFile<winmmf::RwLock<'static>>
 }
 
 impl PartialEq for SharedMemObject {
@@ -144,7 +143,7 @@ impl SharedMemObject {
 	/// `MemoryMappedFile`. If it can be written to by anyone else, undefined behavior can be
 	/// triggered by using [`Self::write_handler`]
 	#[cfg(windows)]
-	pub unsafe fn new(inner: winmmf::MemoryMappedFile<mmf::RwLock<'static>>) -> Self {
+	pub unsafe fn new(inner: winmmf::MemoryMappedFile<winmmf::RwLock<'static>>) -> Self {
 		Self { inner }
 	}
 
@@ -200,9 +199,8 @@ impl SharedMemObject {
 
 			use winmmf::err::Error;
 
-			match self.inner.write(buf) {
-				Ok(()) => Ok(()),
-				Err(e) => match e {
+			self.inner.write(buf)
+				.map_err(|e| match e {
 					Error::ReadLocked => IOError::new(
 						ErrorKind::ResourceBusy,
 						"The MMF is locked by a reader, so we can't write to it at the moment"
@@ -230,8 +228,7 @@ impl SharedMemObject {
 					),
 					Error::GeneralFailure => IOError::other("A general error occurred"),
 					Error::OS_Err(e) | Error::OS_OK(e) => IOError::other(e)
-				}
-			}
+				})
 		}
 	}
 }
