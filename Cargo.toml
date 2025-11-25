@@ -13,18 +13,18 @@ categories = ["graphics", "multimedia::images", "command-line-interface"]
 exclude = ["kitty_errors.md", "kitty.png"]
 
 [dependencies]
-base64 = "0.22"
+base64-simd = "0.8"
 thiserror = "2.0"
 crossterm = { version = "0.29", default-features = false, features = ["event-stream", "bracketed-paste"], optional = true }
 futures-core = { version = "0.3.31", optional = true }
 tokio = { version = "1", default-features = false, features = ["time"], optional = true }
 image = { version = "0.25", default-features = false, optional = true }
-vb64 = { git = "https://github.com/lukaslihotzki/vb64", rev = "01e791186f57982511a3bcfb0d2316010c1adef0", optional = true }
 memchr = "2.7.5"
 log = { version = "0.4.27", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 psx-shm = "0.2"
+# psx-shm = { path = "../psx-shm/" }
 memmap2 = "0.9"
 rustix = { version = "1", default-features = false, features = ["shm"] }
 
@@ -70,7 +70,7 @@ doc_link_with_quotes = "warn"
 doc_broken_link = "warn"
 doc_comment_double_space_linebreaks = "warn"
 doc_markdown = "warn"
-empty_enum = "warn"
+empty_enums = "warn"
 explicit_into_iter_loop = "warn"
 explicit_iter_loop = "warn"
 filter_map_next = "warn"

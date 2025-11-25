@@ -2,7 +2,7 @@
 
 use std::{borrow::Cow, io::Write, num::NonZeroU16, path::Path};
 
-use base64::{engine::general_purpose::STANDARD_NO_PAD, write::EncoderWriter as Base64Encoder};
+use base64_simd::{Base64, Out};
 
 use crate::Encoder;
 
@@ -96,6 +96,19 @@ impl PartialEq for SharedMemObject {
 	}
 }
 
+/// Failure that can happen when calling [`SharedMemObject::create_new`]; see its documentation
+/// for more details
+#[cfg(unix)]
+#[derive(Debug)]
+pub enum ShmCreationFailureStep {
+	/// The call to [`psx_shm::Shm::open`] failed
+	ShmOpen,
+	/// The call to [`psx_shm::Shm::set_size`] failed
+	ShmSetSize,
+	/// The call to [`psx_shm::Shm::map`] failed
+	MemmapCreation
+}
+
 impl SharedMemObject {
 	/// Construct a new instance from just a name and a size. This opens a completely new shm - the
 	/// name must not be in use by any other shm on the system (this function will error if it is).
@@ -105,8 +118,14 @@ impl SharedMemObject {
 	/// This can return an error if any of the following are true:
 	/// - The provided name is already in use by another shm on the system
 	/// - An underlying syscall fails for some reason
+	///
+	/// The [`ShmCreationFailureStep`] that accompanies the [`std::io::Error`] in the result
+	/// clarifies exactly which underlying call produced the io error.
 	#[cfg(unix)]
-	pub fn create_new(name: &str, size: usize) -> std::io::Result<Self> {
+	pub fn create_new(
+		name: &str,
+		size: usize
+	) -> Result<Self, (std::io::Error, ShmCreationFailureStep)> {
 		use psx_shm::UnlinkOnDrop;
 		use rustix::{fs::Mode, shm::OFlags};
 
@@ -114,16 +133,19 @@ impl SharedMemObject {
 			name,
 			OFlags::RDWR | OFlags::CREATE | OFlags::EXCL,
 			Mode::RUSR | Mode::WUSR
-		)?;
+		)
+		.map_err(|e| (e, ShmCreationFailureStep::ShmOpen))?;
 
-		shm.set_size(size)?;
+		shm.set_size(size)
+			.map_err(|e| (e, ShmCreationFailureStep::ShmSetSize))?;
 
 		// SAFETY: We are not mapping an actual file on disc, and because we use the `EXCL` flag up
 		// above, we can ensure that no other process has access to this (unless they, immediately
 		// after we created the shm, happened to also open it with the same name without us telling
 		// them about it, but that's the same sort of risk as someone writing to /proc/mem so we're
 		// not worrying about it)
-		let borrowed_mmap = unsafe { shm.map(0) }?;
+		let borrowed_mmap =
+			unsafe { shm.map(0) }.map_err(|e| (e, ShmCreationFailureStep::MemmapCreation))?;
 		// SAFETY: This is sound because we are not then creating another map
 		let map = unsafe { borrowed_mmap.into_map() };
 
@@ -234,10 +256,17 @@ impl SharedMemObject {
 }
 
 /// Just a wrapper for encoding a chunk of data as base64 and writing it to a writer
-pub(crate) fn write_b64<W: Write>(data: &[u8], writer: W) -> std::io::Result<W> {
-	let mut b64 = Base64Encoder::new(writer, &STANDARD_NO_PAD);
-	b64.write_all_allow_empty(data)?;
-	b64.finish()
+pub(crate) fn write_b64<W: Write>(data: &[u8], mut writer: W) -> std::io::Result<W> {
+	const BUF_SIZE: usize = 1024;
+	let mut buf = [0u8; BUF_SIZE];
+	const ENCODER: Base64 = base64_simd::STANDARD_NO_PAD;
+
+	for chunk in data.chunks(const { ENCODER.estimated_decoded_length(BUF_SIZE) }) {
+		let encoded_chunk = ENCODER.encode(chunk, Out::from_slice(buf.as_mut_slice()));
+		writer.write_all_allow_empty(encoded_chunk)?;
+	}
+
+	Ok(writer)
 }
 
 impl Medium<'_> {
@@ -291,8 +320,6 @@ impl Medium<'_> {
 		};
 
 		write!(writer, ",t={key};")?;
-		let mut writer = Base64Encoder::new(writer, &STANDARD_NO_PAD);
-		writer.write_all_allow_empty(data)?;
-		writer.finish()
+		write_b64(data, writer)
 	}
 }

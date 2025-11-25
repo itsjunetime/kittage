@@ -74,6 +74,16 @@ impl From<::image::DynamicImage> for Image<'static> {
 	}
 }
 
+/// Failures that can happen when calling [`Image::shm_from`] - see that fn for more details
+#[cfg(all(feature = "image-crate", unix))]
+#[derive(Debug)]
+pub enum ImageFromShmFailureStep {
+	/// The call to [`SharedMemObject::create_new`] failed
+	ShmCreation(crate::medium::ShmCreationFailureStep),
+	/// The call to [`SharedMemObject::copy_in_buf`] failed
+	DataCopy
+}
+
 #[cfg(feature = "image-crate")]
 impl<'data> Image<'data> {
 	/// Create an [`Image`] from the given [`image::DynamicImage`] and name. The given name will be
@@ -84,25 +94,27 @@ impl<'data> Image<'data> {
 	/// If you can use shared memory objects, this provides much better performance than just
 	/// calling `image.into()`.
 	///
-	/// The returned [`memmap2::MmapMut`] must be kept around until this is successfully sent to
-	/// the terminal, and then it must be dropped to avoid a memory leak (as dropping it will unmap
-	/// the memory that was sent to the terminal, which is fine as the terminal should've already
-	/// copied the memory into its own storage).
-	///
 	/// [`shm_open`]: https://www.man7.org/linux/man-pages/man3/shm_open.3.html
 	///
 	/// # Errors
 	///
 	/// This can error if the underlying calls to [`SharedMemObject::create_new`] or
-	/// [`SharedMemObject::copy_in_buf`] fail - those errors are bubbled up here.
+	/// [`SharedMemObject::copy_in_buf`] fail - those errors are bubbled up here, and the
+	/// [`ImageFromShmFailureStep`] is used to disambiguate exactly which step failed to cause the
+	/// accompanying [`std::io::Error`]
 	#[cfg(unix)]
-	pub fn shm_from(image: ::image::DynamicImage, name: &str) -> std::io::Result<Self> {
+	pub fn shm_from(
+		image: ::image::DynamicImage,
+		name: &str
+	) -> Result<Self, (std::io::Error, ImageFromShmFailureStep)> {
 		use crate::{action::NONZERO_ONE, medium::SharedMemObject};
 
 		let (format, data) = Image::fmt_and_data_from(image);
 
-		let mut obj = SharedMemObject::create_new(name, data.len())?;
-		obj.copy_in_buf(&data)?;
+		let mut obj = SharedMemObject::create_new(name, data.len())
+			.map_err(|(e, step)| (e, ImageFromShmFailureStep::ShmCreation(step)))?;
+		obj.copy_in_buf(&data)
+			.map_err(|e| (e, ImageFromShmFailureStep::DataCopy))?;
 
 		Ok(Self {
 			num_or_id: NumberOrId::Number(NONZERO_ONE),

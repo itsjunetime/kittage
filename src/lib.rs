@@ -13,12 +13,15 @@ pub mod tmux;
 
 use std::{error::Error, fmt::Display, io::Write, num::NonZeroU32, time::Duration};
 
-use base64::{engine::GeneralPurpose, write::EncoderWriter as Base64Encoder};
 use image::{Image, read_parse_response, read_parse_response_async};
 
-/// Utility trait for allowing us to actually correctly use [`Write::write_all`] on
-/// [`Base64Encoder`] since the blanket implementation doesn't work correctly and they don't want
-/// to override it for some reason
+/// Utility trait for allowing us to actually correctly use [`Write::write_all`] on base64
+/// encoding. The base64 crate's implementation of [`Write`] for their writer type didn't work
+/// correctly with the std `write_all` fn, and it seemed (?) that that was due to some inherent
+/// detail about how different operating systems can sometimes write 0 bytes in a single write
+/// call, but still be ready for more bytes to be written? Idk. I don't remember anymore. But this
+/// fn allows us to work around that and, although we don't use the `base64` crate anymore, I'm
+/// still paranoid and I would be shocked if this has any bad side effects. So we're keeping it.
 trait Encoder<W: Write>: Write {
 	/// basically just [`Write::write_all`] but don't short-circuit if the underlying writer ever
 	/// returns `Ok(0)` for an individual [`Write::write`] call
@@ -38,7 +41,7 @@ trait Encoder<W: Write>: Write {
 	}
 }
 
-impl<W: Write> Encoder<W> for Base64Encoder<'_, GeneralPurpose, W> {}
+impl<W: Write> Encoder<W> for W {}
 
 /// A way to associate specific key characters with the type of integer that correctly represents
 /// their range of allowable values
@@ -450,12 +453,16 @@ pub(crate) mod lib_tests {
 
 	#[tokio::test]
 	async fn basic_functionality() {
+		// TODO: I still don't understand how the image dimensions work tbh. This image is 256x256
+		// pixels but 50 is the maximum number we can put for either dimension to make it work. And
+		// that changed after we losslessly compressed it - it used to be able to work with 64x64.
+		// idk.
 		let img = Image {
 			num_or_id: NumberOrId::Id(NonZeroU32::new(1).unwrap()),
 			format: PixelFormat::Rgb24(
 				ImageDimensions {
-					width: 64,
-					height: 64
+					width: 50,
+					height: 50
 				},
 				None
 			),

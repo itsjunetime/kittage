@@ -78,11 +78,10 @@ pub enum Action<'image, 'data> {
 	Query(&'image Image<'data>),
 	/// Delete a specific set of images. See the [`DeleteConfig`] documentation for more details
 	/// about how to use
-	Delete(DeleteConfig)
-	// we'll do these at some point
-	// TransmitAnimationFrames,
-	// ControlAnimation,
-	// ComposeAnimationFrames
+	Delete(DeleteConfig) // we'll do these at some point
+	                     // TransmitAnimationFrames,
+	                     // ControlAnimation,
+	                     // ComposeAnimationFrames
 }
 
 impl<'image, 'data> Action<'image, 'data> {
