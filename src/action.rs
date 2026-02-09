@@ -84,7 +84,7 @@ pub enum Action<'image, 'data> {
 	                     // ComposeAnimationFrames
 }
 
-impl<'image, 'data> Action<'image, 'data> {
+impl Action<'_, '_> {
 	/// Write the transmit code for this [`Action`] to `writer` - this is the first part of
 	/// [`Self::execute`] and only does a part of what is necessary to fully interact with a
 	/// terminal. The full details can be found at [`Self::execute`].
@@ -97,8 +97,8 @@ impl<'image, 'data> Action<'image, 'data> {
 		writer: W,
 		verbosity: Verbosity
 	) -> Result<W, std::io::Error> {
-		fn inner_for_stdio<'image, 'data, W: Write>(
-			img: &Action<'image, 'data>,
+		fn inner_for_stdio<W: Write>(
+			img: &Action<'_, '_>,
 			mut writer: W,
 			verbosity: Verbosity
 		) -> Result<W, std::io::Error> {

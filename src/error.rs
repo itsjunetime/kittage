@@ -143,7 +143,7 @@ impl<'a> TryFrom<(&'a str, &str)> for TerminalError {
 			"EBADF" => Self::BadFile(s),
 			"ENODATA" => Self::NoData(s),
 			"EFBIG" => Self::FileTooLarge(s),
-			x => Err(UnknownErrorCode(x))?
+			x => return Err(UnknownErrorCode(x))
 		})
 	}
 }

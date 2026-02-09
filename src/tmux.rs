@@ -33,32 +33,46 @@ impl<W: Write> Write for TmuxWriter<W> {
 			self.wrote_first = true;
 		}
 
-		let mut last_idx_written = None;
-		while let Some(next_pos) = memchr::memchr(b'\x1b', buf) {
-			self.inner.write_all(&buf[..=next_pos])?;
+		let mut last_x1b = 0;
+		for found_idx in memchr::memmem::find_iter(buf, b"\x1b") {
+			// So we want to copy over the slice, from and including right after the last idx
+			// written, up to but not including, the byte that is 0x1b. This means that if
+			// `last_x1b` is not 0, then it's the location of an x1b, and will correctly come right
+			// after the x1b that we just inserted. So we are doubling correctly and it's all good.
+			self.inner.write_all(&buf[last_x1b..found_idx])?;
+			// then we write a x1b
 			self.inner.write_all(&[0x1b])?;
-			last_idx_written = Some(next_pos);
+			// and then save for next time
+			last_x1b = found_idx;
 		}
 
-		match last_idx_written {
-			// If the last byte written was at idx usize::MAX, then there's no way the buffer
-			// can be longer than that, so we wrote everything.
-			Some(i) =>
-				if let Some(i) = i.checked_add(1) {
-					self.inner.write_all(&buf[i..])?;
-				},
-			None => self.inner.write_all(buf)?
-		}
-
-		if buf.last().is_some_and(|b| *b == b'\\') {
-			self.inner.write_all(b"\x1b\\")?;
-			self.wrote_first = false;
-		}
+		self.inner.write_all(&buf[last_x1b..])?;
 
 		Ok(buf.len())
 	}
 
 	fn flush(&mut self) -> std::io::Result<()> {
+		self.inner.write_all(b"\x1b\\")?;
+		self.wrote_first = false;
 		self.inner.flush()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn only_encode_that_we_know_of() {
+		let mut writer = TmuxWriter::new(Vec::new());
+		writer
+			.write_all(b"\x1b]1337;SetProfile=NewProfileName\x07")
+			.unwrap();
+		writer.flush().unwrap();
+		let resulting = String::from_utf8(writer.inner).unwrap();
+		assert_eq!(
+			resulting,
+			"\x1bPtmux;\x1b\x1b]1337;SetProfile=NewProfileName\x07\x1b\\"
+		);
 	}
 }

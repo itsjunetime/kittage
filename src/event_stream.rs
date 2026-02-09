@@ -61,6 +61,8 @@ impl AsyncInputReader for &mut EventStream {
 						},
 					Some(Ok(Event::Paste(s))) => match s.find('\x1b') {
 						Some(pos) => {
+							// Fine 'cause we just checked the index with `.find`
+							#[expect(clippy::string_slice)]
 							buf.push_str(&s[..pos]);
 							return Ok(());
 						}

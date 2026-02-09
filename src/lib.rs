@@ -356,7 +356,7 @@ pub enum Verbosity {
 pub(crate) mod lib_tests {
 	use std::{
 		convert::Infallible,
-		hash::{DefaultHasher, Hasher},
+		hash::{DefaultHasher, Hasher as _},
 		num::NonZeroU16,
 		path::{Path, PathBuf},
 		process::{Command, Stdio},
@@ -396,8 +396,7 @@ pub(crate) mod lib_tests {
 		)
 		.unwrap();
 
-		let mut script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-		script_path.push("kitty_test.sh");
+		let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("kitty_test.sh");
 
 		let mut cmd = Command::new("kitty")
 			.args(["--start-as", "hidden", "bash"])
@@ -418,7 +417,7 @@ pub(crate) mod lib_tests {
 		s
 	}
 
-	fn spawn_kitty_with_image<'data>(image: Image<'data>) -> Result<(), TransmitError<Infallible>> {
+	fn spawn_kitty_with_image(image: Image<'_>) -> Result<(), TransmitError<Infallible>> {
 		let mut output = Vec::new();
 		let num_or_id = image.num_or_id;
 		let action = Action::TransmitAndDisplay {
@@ -446,9 +445,9 @@ pub(crate) mod lib_tests {
 	}
 
 	pub fn png_path() -> Box<Path> {
-		let mut manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-		manifest_dir.push("kitty.png");
-		manifest_dir.into()
+		PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.join("kitty.png")
+			.into()
 	}
 
 	#[tokio::test]
@@ -643,7 +642,7 @@ pub(crate) mod lib_tests {
 			}
 		};
 
-		spawn_kitty_with_image(img).unwrap()
+		spawn_kitty_with_image(img).unwrap();
 	}
 
 	#[tokio::test]
@@ -664,7 +663,7 @@ pub(crate) mod lib_tests {
 			}
 		};
 
-		spawn_kitty_with_image(img).unwrap()
+		spawn_kitty_with_image(img).unwrap();
 	}
 
 	#[tokio::test]
@@ -675,7 +674,7 @@ pub(crate) mod lib_tests {
 			medium: Medium::File(png_path())
 		};
 
-		spawn_kitty_with_image(img).unwrap()
+		spawn_kitty_with_image(img).unwrap();
 	}
 
 	#[tokio::test]

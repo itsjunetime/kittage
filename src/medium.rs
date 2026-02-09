@@ -4,7 +4,7 @@ use std::{borrow::Cow, io::Write, num::NonZeroU16, path::Path};
 
 use base64_simd::{Base64, Out};
 
-use crate::Encoder;
+use crate::Encoder as _;
 
 /// The amount of data that should be sent within a single escape code when transferring data via a
 /// 'direct' medium (see [`Medium::Direct`]) - this data does not necessarily *need* to be chunked
@@ -20,6 +20,7 @@ impl ChunkSize {
 	/// `size` represents the number of 4-byte chunks of (already base64-encoded) data sent within
 	/// each escape code. If it is greater than 1024, this will return [`None`] as the protocol
 	/// specifies that no more than 4096 bytes may be sent at a time.
+	#[must_use]
 	pub fn new(size: NonZeroU16) -> Option<Self> {
 		(size.get() <= 1024).then_some(Self(size))
 	}

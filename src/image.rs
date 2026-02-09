@@ -3,9 +3,9 @@
 use std::{io::Write, num::NonZeroU32, str::Split, time::Duration};
 
 use crate::{
-	AnyValueOrSpecific, AsyncInputReader, Encodable, IMAGE_NUMBER_KEY, IdentifierType, ImageId,
-	InputReader, NumberOrId, PLACEMENT_ID_KEY, PixelFormat, PlacementId, TRANSFER_ID_KEY,
-	VERBOSITY_LEVEL_KEY, Verbosity, WriteUint,
+	AnyValueOrSpecific, AsyncInputReader, Encodable as _, IMAGE_NUMBER_KEY, IdentifierType,
+	ImageId, InputReader, NumberOrId, PLACEMENT_ID_KEY, PixelFormat, PlacementId, TRANSFER_ID_KEY,
+	VERBOSITY_LEVEL_KEY, Verbosity, WriteUint as _,
 	display::DisplayConfig,
 	error::{ParseError, TerminalError, TransmitError},
 	medium::Medium
@@ -64,7 +64,7 @@ impl From<::image::DynamicImage> for Image<'static> {
 		let (format, data) = Image::fmt_and_data_from(value);
 
 		Self {
-			num_or_id: NumberOrId::Number(NonZeroU32::new(1).unwrap()),
+			num_or_id: NumberOrId::Number(NonZeroU32::MIN),
 			format,
 			medium: Medium::Direct {
 				chunk_size: Some(crate::medium::ChunkSize::default()),
@@ -85,7 +85,7 @@ pub enum ImageFromShmFailureStep {
 }
 
 #[cfg(feature = "image-crate")]
-impl<'data> Image<'data> {
+impl Image<'_> {
 	/// Create an [`Image`] from the given [`image::DynamicImage`] and name. The given name will be
 	/// passed to [`shm_open`] and then given to kitty for it to take ownership of.
 	///
@@ -125,6 +125,7 @@ impl<'data> Image<'data> {
 
 	/// Pull the format and data (of that format) from a specific image. Used to convert a given
 	/// [`image::DynamicImage`] into an [`Image`]
+	#[must_use]
 	pub fn fmt_and_data_from(image: ::image::DynamicImage) -> (PixelFormat, Vec<u8>) {
 		use ::image::DynamicImage::*;
 
@@ -196,11 +197,17 @@ pub(crate) fn parse_response(
 	}
 
 	let input = output.trim_start_matches("_G");
-	let Some(semicolon_pos) = input.find(';') else {
+	let mut split_iter = input.split(';');
+
+	// First call to `split` always returns `Some`, so it's fine to unwrap, but we're going to avoid
+	// doing so just in case, like if there's some refactor or smth later
+	let before_semicolon = split_iter.next().unwrap_or(input);
+
+	let Some(after_semicolon) = split_iter.next() else {
 		return Err(ParseError::NoFinalSemicolon);
 	};
 
-	let options = input[..semicolon_pos]
+	let options = before_semicolon
 		.split(',')
 		.filter(|s| !s.is_empty())
 		.map(|s| s.split('='));
@@ -242,7 +249,7 @@ pub(crate) fn parse_response(
 				// terminal), so it's fine to have an unexpected id here.
 				(None, Some(s)) =>
 					if ty == IdentifierType::ImageId {
-						s.parse::<NonZeroU32>().map(Some).map_err(|_| {
+						s.parse::<NonZeroU32>().map(Some).map_err(|_e| {
 							ParseError::DifferentIdInResponse {
 								ty,
 								found: s.to_string(),
@@ -312,17 +319,13 @@ pub(crate) fn parse_response(
 		});
 	}
 
-	// this is chill - if the semicolon is the last thing in the string, then this'll just be
-	// an empty string.
-	let response = &input[semicolon_pos + 1..];
-
-	if response == "OK" || response == "OK\n" {
+	if after_semicolon == "OK" || after_semicolon == "OK\n" {
 		return Ok(Ok(found_image_id));
 	}
 
-	let mut split = response.split(':');
+	let mut split = after_semicolon.split(':');
 	let (Some(code), Some(reason)) = (split.next(), split.next()) else {
-		return Err(ParseError::MalformedError(response.to_string()));
+		return Err(ParseError::MalformedError(after_semicolon.to_string()));
 	};
 
 	TerminalError::try_from((code, reason)).map_or_else(
@@ -342,7 +345,7 @@ mod tests {
 
 	#[test]
 	fn parse_good_responses() {
-		#[allow(clippy::unnecessary_wraps)]
+		#[expect(clippy::unnecessary_wraps)]
 		fn id(i: u32) -> Result<Result<NonZeroU32, TerminalError>, ParseError> {
 			Ok(Ok(NonZeroU32::new(i).unwrap()))
 		}
