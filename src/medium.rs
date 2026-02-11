@@ -86,7 +86,7 @@ pub struct SharedMemObject {
 
 	/// The shm itself
 	#[cfg(windows)]
-	inner: winmmf::MemoryMappedFile<winmmf::RwLock<'static>>
+	inner: winmmf::MemoryMappedFile<winmmf::RWLock<'static>>
 }
 
 impl PartialEq for SharedMemObject {
@@ -166,7 +166,7 @@ impl SharedMemObject {
 	/// `MemoryMappedFile`. If it can be written to by anyone else, undefined behavior can be
 	/// triggered by using [`Self::write_handler`]
 	#[cfg(windows)]
-	pub unsafe fn new(inner: winmmf::MemoryMappedFile<winmmf::RwLock<'static>>) -> Self {
+	pub unsafe fn new(inner: winmmf::MemoryMappedFile<winmmf::RWLock<'static>>) -> Self {
 		Self { inner }
 	}
 
