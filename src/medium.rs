@@ -232,6 +232,10 @@ impl SharedMemObject {
 						ErrorKind::ResourceBusy,
 						"The MMF is locked by another writer, so we can't write to it at the moment"
 					),
+					Error::Uninitialized => IOError::new(
+						ErrorKind::InvalidData,
+						"The MMF is uninitialized, cannot write to it. Please recreate it and try again."
+					),
 					Error::MaxReaders => IOError::new(
 						ErrorKind::QuotaExceeded,
 						"More than 128 readers were active at the same time; back off"
@@ -249,7 +253,12 @@ impl SharedMemObject {
 						ErrorKind::ResourceBusy,
 						"The MMF is locked and we spun for the max amount of times to try to get access without success"
 					),
-					Error::GeneralFailure => IOError::other("A general error occurred"),
+
+					error::LargePagePermissionError => IOError::new(
+						ErrorKind::PermissionDenied,
+						"This process could not acquire the necesssary permissions to use large pages, but this MMF requires large pages."
+					),
+					Error::GeneralFailure => IOError::other("An inspecific, general error occurred"),
 					Error::OS_Err(e) | Error::OS_OK(e) => IOError::other(e)
 				})
 		}
