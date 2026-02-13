@@ -254,7 +254,7 @@ impl SharedMemObject {
 						"The MMF is locked and we spun for the max amount of times to try to get access without success"
 					),
 
-					error::LargePagePermissionError => IOError::new(
+					Error::LargePagePermissionError => IOError::new(
 						ErrorKind::PermissionDenied,
 						"This process could not acquire the necesssary permissions to use large pages, but this MMF requires large pages."
 					),
