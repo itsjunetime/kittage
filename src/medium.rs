@@ -220,7 +220,7 @@ impl SharedMemObject {
 		{
 			use std::io::{Error as IOError, ErrorKind};
 
-			use winmmf::err::Error;
+			use winmmf::{Mmf, err::Error};
 
 			self.inner.write(buf)
 				.map_err(|e| match e {
