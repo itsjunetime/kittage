@@ -1,6 +1,6 @@
 [package]
 name = "kittage"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["June Welker <junewelker@gmail.com>"]
 edition = "2024"
 rust-version = "1.85"

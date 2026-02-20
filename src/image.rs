@@ -92,9 +92,13 @@ where
 
 /// An error that could arise when calling the windows impl of [`Image::shm_from`]
 #[cfg(all(feature = "image-crate", windows))]
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum MMFImageErr {
+	#[error(
+		"The provided image had zero pixels, and trying to create a MMF with zero bytes will always fail"
+	)]
 	SizeIsZero,
+	#[error("Couldn't create the MMF through the OS: {0}")]
 	Creation(winmmf::err::Error)
 }
 
