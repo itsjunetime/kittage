@@ -75,13 +75,27 @@ impl From<::image::DynamicImage> for Image<'static> {
 }
 
 /// Failures that can happen when calling [`Image::shm_from`] - see that fn for more details
-#[cfg(all(feature = "image-crate", unix))]
-#[derive(Debug)]
-pub enum ImageFromShmFailureStep {
+#[cfg(feature = "image-crate")]
+#[derive(Debug, thiserror::Error)]
+pub enum ImageFromShmFailureStep<CE, DE>
+where
+	CE: core::fmt::Display,
+	DE: core::fmt::Display
+{
 	/// The call to [`SharedMemObject::create_new`] failed
-	ShmCreation(crate::medium::ShmCreationFailureStep),
+	#[error("Couldn't create the shm: {0}")]
+	ShmCreation(CE),
 	/// The call to [`SharedMemObject::copy_in_buf`] failed
-	DataCopy
+	#[error("Couldn't copy over the provided image data into the shm: {0}")]
+	DataCopy(DE)
+}
+
+/// An error that could arise when calling the windows impl of [`Image::shm_from`]
+#[cfg(all(feature = "image-crate", windows))]
+#[derive(Debug)]
+enum MMFImageErr {
+	SizeIsZero,
+	Creation(winmmf::err::Error)
 }
 
 #[cfg(feature = "image-crate")]
@@ -106,7 +120,44 @@ impl Image<'_> {
 	pub fn shm_from(
 		image: ::image::DynamicImage,
 		name: &str
-	) -> Result<Self, (std::io::Error, ImageFromShmFailureStep)> {
+	) -> Result<Self, ImageFromShmFailureStep<crate::medium::ShmError, std::io::Error>> {
+		use crate::{action::NONZERO_ONE, medium::SharedMemObject};
+
+		let (format, data) = Image::fmt_and_data_from(image);
+
+		let mut obj = SharedMemObject::create_new(name, data.len())
+			.map_err(ImageFromShmFailureStep::ShmCreation)?;
+		obj.copy_in_buf(&data)
+			.map_err(ImageFromShmFailureStep::DataCopy)?;
+
+		Ok(Self {
+			num_or_id: NumberOrId::Number(NONZERO_ONE),
+			format,
+			medium: Medium::SharedMemObject(obj)
+		})
+	}
+
+	/// Create an [`Image`] from the given [`image::DynamicImage`] and name. The given name will be
+	/// use to create a [`winmmf::MemoryMappedFile`] and then given to kitty for it to take ownership of.
+	///
+	/// The image returned from this will contain a [`Medium::SharedMemObject`].
+	///
+	/// If you can use shared memory objects, this provides much better performance than just
+	/// calling `image.into()`.
+	///
+	/// # Errors
+	///
+	/// This can error if the underlying calls to [`SharedMemObject::create_new`] or
+	/// [`SharedMemObject::copy_in_buf`] fail - those errors are bubbled up here, and the
+	/// [`ImageFromShmFailureStep`] is used to disambiguate exactly which step failed to cause the
+	/// accompanying [`winmmf::err::Error`]
+	#[cfg(windows)]
+	pub fn shm_from(
+		image: ::image::DynamicImage,
+		name: String
+	) -> Result<Self, ImageFromShmFailureStep<MMFImageErr, winmmf::err::Error>> {
+		use core::num::NonZeroUsize;
+
 		use crate::{
 			action::NONZERO_ONE,
 			medium::{SharedMemObject, ShmError}
@@ -114,10 +165,14 @@ impl Image<'_> {
 
 		let (format, data) = Image::fmt_and_data_from(image);
 
-		let mut obj = SharedMemObject::create_new(name, data.len())
-			.map_err(|ShmError { err, step }| (err, ImageFromShmFailureStep::ShmCreation(step)))?;
+		let data_size = NonZeroUsize::new(data.len()).ok_or(
+			ImageFromShmFailureStep::ShmCreation(MMFImageErr::SizeIsZero)
+		)?;
+
+		let mut obj = SharedMemObject::create_new(name, data_size)
+			.map_err(ImageFromShmFailureStep::ShmCreation)?;
 		obj.copy_in_buf(&data)
-			.map_err(|e| (e, ImageFromShmFailureStep::DataCopy))?;
+			.map_err(ImageFromShmFailureStep::DataCopy)?;
 
 		Ok(Self {
 			num_or_id: NumberOrId::Number(NONZERO_ONE),
