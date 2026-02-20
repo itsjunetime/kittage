@@ -101,6 +101,36 @@ impl PartialEq for SharedMemObject {
 /// for more details
 #[cfg(unix)]
 #[derive(Debug)]
+pub struct ShmError {
+	/// The step of [`SharedMemObject::create_new`] that causes `err`
+	pub step: ShmCreationFailureStep,
+	/// The error caused at the step `step`
+	pub err: std::io::Error
+}
+
+#[cfg(unix)]
+impl std::fmt::Display for ShmError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let Self { step, err } = self;
+		match step {
+			ShmCreationFailureStep::ShmOpen => write!(f, "Couldn't open SHM: {err}"),
+			ShmCreationFailureStep::ShmSetSize =>
+				write!(f, "Couldn't set the size of the SHM: {err}"),
+			ShmCreationFailureStep::MemmapCreation => write!(
+				f,
+				"Couldn't create the memmap necessary to write to this SHM: {err}"
+			)
+		}
+	}
+}
+
+#[cfg(unix)]
+impl core::error::Error for ShmError {}
+
+/// The point at which the error contained in [`ShmError`] happens in
+/// [`SharedMemObject::create_new`]
+#[cfg(unix)]
+#[derive(Debug)]
 pub enum ShmCreationFailureStep {
 	/// The call to [`psx_shm::Shm::open`] failed
 	ShmOpen,
@@ -123,10 +153,7 @@ impl SharedMemObject {
 	/// The [`ShmCreationFailureStep`] that accompanies the [`std::io::Error`] in the result
 	/// clarifies exactly which underlying call produced the io error.
 	#[cfg(unix)]
-	pub fn create_new(
-		name: &str,
-		size: usize
-	) -> Result<Self, (std::io::Error, ShmCreationFailureStep)> {
+	pub fn create_new(name: &str, size: usize) -> Result<Self, ShmError> {
 		use psx_shm::UnlinkOnDrop;
 		use rustix::{fs::Mode, shm::OFlags};
 
@@ -135,18 +162,25 @@ impl SharedMemObject {
 			OFlags::RDWR | OFlags::CREATE | OFlags::EXCL,
 			Mode::RUSR | Mode::WUSR
 		)
-		.map_err(|e| (e, ShmCreationFailureStep::ShmOpen))?;
+		.map_err(|err| ShmError {
+			step: ShmCreationFailureStep::ShmOpen,
+			err
+		})?;
 
-		shm.set_size(size)
-			.map_err(|e| (e, ShmCreationFailureStep::ShmSetSize))?;
+		shm.set_size(size).map_err(|err| ShmError {
+			step: ShmCreationFailureStep::ShmSetSize,
+			err
+		})?;
 
 		// SAFETY: We are not mapping an actual file on disc, and because we use the `EXCL` flag up
 		// above, we can ensure that no other process has access to this (unless they, immediately
 		// after we created the shm, happened to also open it with the same name without us telling
 		// them about it, but that's the same sort of risk as someone writing to /proc/mem so we're
 		// not worrying about it)
-		let borrowed_mmap =
-			unsafe { shm.map(0) }.map_err(|e| (e, ShmCreationFailureStep::MemmapCreation))?;
+		let borrowed_mmap = unsafe { shm.map(0) }.map_err(|err| ShmError {
+			step: ShmCreationFailureStep::MemmapCreation,
+			err
+		})?;
 		// SAFETY: This is sound because we are not then creating another map
 		let map = unsafe { borrowed_mmap.into_map() };
 
@@ -158,15 +192,21 @@ impl SharedMemObject {
 		})
 	}
 
-	/// Construct a new instance after opening a [`winmmf::MemoryMappedFile`].
+	/// Construct a new instance of self on windows, using the given name and size.
 	///
-	/// # Safety
+	/// # Errors
 	///
-	/// `inner` must have been created by this process, and must be the only open instance of this
-	/// `MemoryMappedFile`. If it can be written to by anyone else, undefined behavior can be
-	/// triggered by using [`Self::write_handler`]
+	/// This can return an error if the inner call to [`winmmf::MemoryMappedFile::new`] fails
 	#[cfg(windows)]
-	pub unsafe fn new(inner: winmmf::MemoryMappedFile<winmmf::RWLock<'static>>) -> Self {
+	pub fn create_new(
+		name: String,
+		size: core::num::NonZeroUsize
+	) -> Result<Self, winmmf::err::Error> {
+		use winmmf::{MemoryMappedFile, RWLock, mmf::Namespace};
+
+		let mut inner =
+			MemoryMappedFile::<RWLock<'static>>::new(size, name, Namespace::LOCAL, None)?;
+
 		Self { inner }
 	}
 
@@ -220,7 +260,7 @@ impl SharedMemObject {
 		{
 			use std::io::{Error as IOError, ErrorKind};
 
-			use winmmf::{Mmf, err::Error};
+			use winmmf::{Mmf as _, err::Error};
 
 			self.inner.write(buf)
 				.map_err(|e| match e {

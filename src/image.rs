@@ -107,12 +107,15 @@ impl Image<'_> {
 		image: ::image::DynamicImage,
 		name: &str
 	) -> Result<Self, (std::io::Error, ImageFromShmFailureStep)> {
-		use crate::{action::NONZERO_ONE, medium::SharedMemObject};
+		use crate::{
+			action::NONZERO_ONE,
+			medium::{SharedMemObject, ShmError}
+		};
 
 		let (format, data) = Image::fmt_and_data_from(image);
 
 		let mut obj = SharedMemObject::create_new(name, data.len())
-			.map_err(|(e, step)| (e, ImageFromShmFailureStep::ShmCreation(step)))?;
+			.map_err(|ShmError { err, step }| (err, ImageFromShmFailureStep::ShmCreation(step)))?;
 		obj.copy_in_buf(&data)
 			.map_err(|e| (e, ImageFromShmFailureStep::DataCopy))?;
 
