@@ -170,7 +170,7 @@ impl Image<'_> {
 		)?;
 
 		let mut obj = SharedMemObject::create_new(name, data_size)
-			.map_err(ImageFromShmFailureStep::ShmCreation)?;
+			.map_err(|e| ImageFromShmFailureStep::ShmCreation(MMFImageErr::Creation(e)))?;
 		obj.copy_in_buf(&data)
 			.map_err(ImageFromShmFailureStep::DataCopy)?;
 
