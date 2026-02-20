@@ -204,10 +204,8 @@ impl SharedMemObject {
 	) -> Result<Self, winmmf::err::Error> {
 		use winmmf::{MemoryMappedFile, RWLock, mmf::Namespace};
 
-		let mut inner =
-			MemoryMappedFile::<RWLock<'static>>::new(size, name, Namespace::LOCAL, None)?;
-
-		Self { inner }
+		MemoryMappedFile::<RWLock<'static>>::new(size, name, Namespace::LOCAL, None)
+			.map(|inner| Self { inner })
 	}
 
 	fn name(&self) -> Box<str> {
