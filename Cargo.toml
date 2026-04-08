@@ -1,9 +1,9 @@
 [package]
 name = "kittage"
-version = "0.3.4"
+version = "0.4.0"
 authors = ["June Welker <junewelker@gmail.com>"]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Interact with all aspects of the kitty terminal graphics protocol"
 readme = "README.md"
 repository = "https://github.com/itsjunetime/kittage"

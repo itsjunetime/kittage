@@ -79,7 +79,7 @@ impl From<::image::DynamicImage> for Image<'static> {
 #[derive(Debug, thiserror::Error)]
 pub enum ImageFromShmFailureStep<E>
 where
-	E: core::fmt::Display,
+	E: core::fmt::Display
 {
 	/// The call to [`SharedMemObject::create_new`] failed
 	#[error("Couldn't create the shm: {0}")]
@@ -124,7 +124,7 @@ impl Image<'_> {
 		image: ::image::DynamicImage,
 		name: &str
 	) -> Result<Self, ImageFromShmFailureStep<crate::medium::ShmError>> {
-		use crate::{action::NONZERO_ONE, medium::SharedMemObject};
+		use crate::medium::SharedMemObject;
 
 		let (format, data) = Image::fmt_and_data_from(image);
 
@@ -134,7 +134,7 @@ impl Image<'_> {
 			.map_err(ImageFromShmFailureStep::DataCopy)?;
 
 		Ok(Self {
-			num_or_id: NumberOrId::Number(NONZERO_ONE),
+			num_or_id: NumberOrId::Number(NonZeroU32::MIN),
 			format,
 			medium: Medium::SharedMemObject(obj)
 		})
@@ -161,7 +161,7 @@ impl Image<'_> {
 	) -> Result<Self, ImageFromShmFailureStep<MMFImageErr>> {
 		use core::num::NonZeroUsize;
 
-		use crate::{action::NONZERO_ONE, medium::SharedMemObject};
+		use crate::medium::SharedMemObject;
 
 		let (format, data) = Image::fmt_and_data_from(image);
 
@@ -175,7 +175,7 @@ impl Image<'_> {
 			.map_err(ImageFromShmFailureStep::DataCopy)?;
 
 		Ok(Self {
-			num_or_id: NumberOrId::Number(NONZERO_ONE),
+			num_or_id: NumberOrId::Number(NonZeroU32::MIN),
 			format,
 			medium: Medium::SharedMemObject(obj)
 		})

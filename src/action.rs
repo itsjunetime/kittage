@@ -1,6 +1,6 @@
 //! The [`Action`] type
 
-use std::{io::Write, num::NonZeroU32};
+use std::io::Write;
 
 use crate::{
 	AsyncInputReader, Image, ImageId, InputReader, NumberOrId, PlacementId, Verbosity,
@@ -194,7 +194,7 @@ impl Action<'_, '_> {
 		self,
 		writer: W,
 		reader: I
-	) -> Result<(W, ImageId), TransmitError<I::Error>> {
+	) -> Result<(W, Option<ImageId>), TransmitError<I::Error>> {
 		let id_and_p = self.extract_num_or_id_and_placement();
 
 		let writer = self
@@ -202,13 +202,11 @@ impl Action<'_, '_> {
 			.map_err(TransmitError::Writing)?;
 
 		let img_id = if let Some((id_or_num, placement_id)) = id_and_p {
-			read_parse_response(reader, id_or_num, placement_id)?
+			Some(read_parse_response(reader, id_or_num, placement_id)?)
 		} else {
-			// We have to use a constant here 'cause if we have the `unwrap()` syntactically
-			// existing inside this fn, clippy insists it can panic at runtime and thus we need a
-			// section of settings detailing how it could panid
-			NONZERO_ONE
+			None
 		};
+
 		Ok((writer, img_id))
 	}
 
@@ -221,7 +219,7 @@ impl Action<'_, '_> {
 		self,
 		writer: W,
 		reader: I
-	) -> Result<(W, ImageId), TransmitError<I::Error>> {
+	) -> Result<(W, Option<ImageId>), TransmitError<I::Error>> {
 		let id_and_p = self.extract_num_or_id_and_placement();
 
 		let writer = self
@@ -229,13 +227,11 @@ impl Action<'_, '_> {
 			.map_err(TransmitError::Writing)?;
 
 		let img_id = if let Some((id_or_num, placement_id)) = id_and_p {
-			read_parse_response_async(reader, id_or_num, placement_id).await?
+			Some(read_parse_response_async(reader, id_or_num, placement_id).await?)
 		} else {
-			NONZERO_ONE
+			None
 		};
+
 		Ok((writer, img_id))
 	}
 }
-
-/// Just a constant we reuse sometimes. A [`NonZeroU32`] wrapping the value 1.
-pub const NONZERO_ONE: NonZeroU32 = const { NonZeroU32::new(1).unwrap() };
